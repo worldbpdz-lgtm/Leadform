@@ -1,4 +1,11 @@
+import type { LinksFunction } from "react-router";
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+
+import adminStyles from "~/styles/admin.css?url";
+
+export const links: LinksFunction = () => [
+  { rel: "stylesheet", href: adminStyles },
+];
 
 export default function App() {
   return (

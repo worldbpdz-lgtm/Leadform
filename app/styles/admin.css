@@ -1,0 +1,423 @@
+/* ==========================================================
+   LeadForm Admin – Premium Global UI
+   File: app/styles/admin.css
+   ========================================================== */
+
+/* ---------------------------
+   Design tokens
+---------------------------- */
+:root {
+  /* Surfaces */
+  --lf-bg: #f6f7fb;
+  --lf-surface: #ffffff;
+  --lf-surface-2: #fbfcfe;
+
+  /* Text */
+  --lf-text: #0b1220;
+  --lf-text-muted: #5b6476;
+  --lf-text-faint: #7a8396;
+
+  /* Borders */
+  --lf-border: rgba(15, 23, 42, 0.10);
+  --lf-border-strong: rgba(15, 23, 42, 0.16);
+
+  /* Brand */
+  --lf-brand: #635bff;          /* premium violet */
+  --lf-brand-2: #22c55e;        /* success accent */
+  --lf-warn: #f59e0b;
+  --lf-danger: #ef4444;
+
+  /* Radii */
+  --lf-r-sm: 10px;
+  --lf-r-md: 14px;
+  --lf-r-lg: 18px;
+  --lf-r-xl: 24px;
+
+  /* Spacing */
+  --lf-1: 6px;
+  --lf-2: 10px;
+  --lf-3: 14px;
+  --lf-4: 18px;
+  --lf-5: 24px;
+  --lf-6: 32px;
+  --lf-7: 44px;
+
+  /* Shadows */
+  --lf-shadow-xs: 0 1px 1px rgba(10, 15, 30, 0.03), 0 1px 2px rgba(10, 15, 30, 0.05);
+  --lf-shadow-sm: 0 8px 18px rgba(10, 15, 30, 0.06);
+  --lf-shadow-md: 0 18px 42px rgba(10, 15, 30, 0.10);
+  --lf-shadow-lg: 0 30px 70px rgba(10, 15, 30, 0.14);
+
+  /* Focus */
+  --lf-focus: 0 0 0 3px rgba(99, 91, 255, 0.18), 0 0 0 1px rgba(99, 91, 255, 0.45);
+
+  /* Motion */
+  --lf-ease: cubic-bezier(.2,.8,.2,1);
+  --lf-fast: 140ms;
+  --lf-med: 220ms;
+  --lf-slow: 360ms;
+
+  /* Hairline */
+  --lf-hairline: 1px solid var(--lf-border);
+}
+
+/* Dark mode support (optional, doesn’t break Polaris) */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --lf-bg: #0b1220;
+    --lf-surface: #0f172a;
+    --lf-surface-2: #111c33;
+
+    --lf-text: #e8ecf5;
+    --lf-text-muted: #b0b8cc;
+    --lf-text-faint: #8e97ad;
+
+    --lf-border: rgba(226, 232, 240, 0.10);
+    --lf-border-strong: rgba(226, 232, 240, 0.16);
+
+    --lf-shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.35);
+    --lf-shadow-sm: 0 10px 26px rgba(0, 0, 0, 0.40);
+    --lf-shadow-md: 0 22px 56px rgba(0, 0, 0, 0.48);
+    --lf-shadow-lg: 0 34px 90px rgba(0, 0, 0, 0.55);
+
+    --lf-focus: 0 0 0 3px rgba(99, 91, 255, 0.22), 0 0 0 1px rgba(99, 91, 255, 0.55);
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  :root { --lf-fast: 0ms; --lf-med: 0ms; --lf-slow: 0ms; }
+}
+
+/* ---------------------------
+   Global base
+---------------------------- */
+html, body {
+  background: var(--lf-bg);
+  color: var(--lf-text);
+}
+
+* { box-sizing: border-box; }
+
+::selection {
+  background: rgba(99, 91, 255, 0.22);
+}
+
+/* Subtle animated background glow */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -40vh -30vw auto -30vw;
+  height: 80vh;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(60% 60% at 30% 30%, rgba(99, 91, 255, 0.14), rgba(99, 91, 255, 0) 60%),
+    radial-gradient(50% 50% at 70% 40%, rgba(34, 197, 94, 0.10), rgba(34, 197, 94, 0) 60%),
+    radial-gradient(55% 55% at 50% 90%, rgba(245, 158, 11, 0.08), rgba(245, 158, 11, 0) 60%);
+  filter: blur(14px);
+  opacity: 0.9;
+  transform: translate3d(0,0,0);
+  animation: lfGlow 12s var(--lf-ease) infinite alternate;
+}
+@keyframes lfGlow {
+  0%   { transform: translate3d(0,0,0) scale(1); opacity: .85; }
+  100% { transform: translate3d(2.5vw,-1.5vh,0) scale(1.04); opacity: .95; }
+}
+
+/* Make sure app content is above background */
+body > * { position: relative; z-index: 1; }
+
+/* ---------------------------
+   Layout wrappers (use these in components)
+---------------------------- */
+.lf-admin {
+  min-height: 100vh;
+  padding: clamp(18px, 2.6vw, 34px);
+}
+
+.lf-page {
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+/* Page entrance animation */
+.lf-enter {
+  animation: lfEnter var(--lf-slow) var(--lf-ease) both;
+}
+@keyframes lfEnter {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------------------
+   Premium grid system
+---------------------------- */
+.lf-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(14px, 1.5vw, 22px);
+}
+
+.lf-col-12 { grid-column: span 12; }
+.lf-col-8  { grid-column: span 8; }
+.lf-col-6  { grid-column: span 6; }
+.lf-col-4  { grid-column: span 4; }
+.lf-col-3  { grid-column: span 3; }
+
+@media (max-width: 980px) {
+  .lf-col-8, .lf-col-6, .lf-col-4, .lf-col-3 { grid-column: span 12; }
+}
+
+/* ---------------------------
+   Card / Surface (premium)
+---------------------------- */
+.lf-card {
+  background: linear-gradient(180deg, var(--lf-surface), var(--lf-surface-2));
+  border: var(--lf-hairline);
+  border-radius: var(--lf-r-xl);
+  box-shadow: var(--lf-shadow-xs);
+  padding: clamp(16px, 1.6vw, 24px);
+  transition:
+    transform var(--lf-med) var(--lf-ease),
+    box-shadow var(--lf-med) var(--lf-ease),
+    border-color var(--lf-med) var(--lf-ease);
+  position: relative;
+  overflow: hidden;
+}
+
+/* subtle top highlight */
+.lf-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 54px;
+  background: radial-gradient(120% 120% at 15% 10%, rgba(99, 91, 255, 0.18), rgba(99, 91, 255, 0) 55%);
+  opacity: .55;
+  pointer-events: none;
+}
+
+.lf-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--lf-shadow-sm);
+  border-color: var(--lf-border-strong);
+}
+
+/* interactive card variant */
+.lf-card--interactive {
+  cursor: pointer;
+}
+.lf-card--interactive:active {
+  transform: translateY(0);
+  box-shadow: var(--lf-shadow-xs);
+}
+
+.lf-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--lf-2);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--lf-text-faint);
+  margin: 0 0 var(--lf-2) 0;
+}
+
+.lf-card-heading {
+  font-size: 18px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--lf-2) 0;
+  color: var(--lf-text);
+}
+
+.lf-muted {
+  color: var(--lf-text-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+/* KPI */
+.lf-kpi {
+  font-size: 30px;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  color: var(--lf-text);
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--lf-2);
+}
+
+.lf-kpi-sub {
+  font-size: 12.5px;
+  color: var(--lf-text-faint);
+  font-weight: 600;
+}
+
+/* ---------------------------
+   Premium buttons (optional wrappers)
+---------------------------- */
+.lf-btn-row {
+  display: flex;
+  gap: var(--lf-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.lf-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: var(--lf-hairline);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--lf-shadow-xs);
+  color: var(--lf-text);
+  font-weight: 650;
+  font-size: 13px;
+  transition:
+    transform var(--lf-fast) var(--lf-ease),
+    box-shadow var(--lf-fast) var(--lf-ease),
+    border-color var(--lf-fast) var(--lf-ease);
+}
+@media (prefers-color-scheme: dark) {
+  .lf-pill { background: rgba(17, 28, 51, 0.65); }
+}
+.lf-pill:hover { transform: translateY(-1px); box-shadow: var(--lf-shadow-sm); border-color: var(--lf-border-strong); }
+.lf-pill:active { transform: translateY(0); box-shadow: var(--lf-shadow-xs); }
+.lf-pill:focus-visible { outline: none; box-shadow: var(--lf-focus); }
+
+.lf-pill--primary {
+  border-color: rgba(99, 91, 255, 0.30);
+  background: linear-gradient(180deg, rgba(99, 91, 255, 0.12), rgba(99, 91, 255, 0.06));
+}
+.lf-pill--success {
+  border-color: rgba(34, 197, 94, 0.28);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.12), rgba(34, 197, 94, 0.06));
+}
+
+/* ---------------------------
+   Badges (status)
+---------------------------- */
+.lf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: var(--lf-hairline);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  color: var(--lf-text);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(10px);
+}
+@media (prefers-color-scheme: dark) {
+  .lf-badge { background: rgba(17, 28, 51, 0.65); }
+}
+
+.lf-badge--pending  { border-color: rgba(245, 158, 11, 0.30); }
+.lf-badge--approved { border-color: rgba(34, 197, 94, 0.30); }
+.lf-badge--rejected { border-color: rgba(239, 68, 68, 0.30); }
+
+.lf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lf-text-faint);
+}
+.lf-badge--pending  .lf-dot { background: var(--lf-warn); }
+.lf-badge--approved .lf-dot { background: var(--lf-brand-2); }
+.lf-badge--rejected .lf-dot { background: var(--lf-danger); }
+
+/* ---------------------------
+   Table shell (for Requests list later)
+---------------------------- */
+.lf-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  border-radius: var(--lf-r-xl);
+  border: var(--lf-hairline);
+  background: linear-gradient(180deg, var(--lf-surface), var(--lf-surface-2));
+  box-shadow: var(--lf-shadow-xs);
+}
+
+.lf-table th,
+.lf-table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--lf-border);
+  font-size: 13px;
+}
+
+.lf-table th {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--lf-text-faint);
+  background: rgba(15, 23, 42, 0.02);
+}
+
+@media (prefers-color-scheme: dark) {
+  .lf-table th { background: rgba(226, 232, 240, 0.04); }
+}
+
+.lf-table tr:last-child td { border-bottom: 0; }
+
+.lf-row-hover:hover td {
+  background: rgba(99, 91, 255, 0.05);
+  transition: background var(--lf-fast) var(--lf-ease);
+}
+
+/* ---------------------------
+   Spacing utilities
+---------------------------- */
+.lf-mt-1 { margin-top: var(--lf-1); }
+.lf-mt-2 { margin-top: var(--lf-2); }
+.lf-mt-3 { margin-top: var(--lf-3); }
+.lf-mt-4 { margin-top: var(--lf-4); }
+.lf-mt-5 { margin-top: var(--lf-5); }
+
+.lf-mb-1 { margin-bottom: var(--lf-1); }
+.lf-mb-2 { margin-bottom: var(--lf-2); }
+.lf-mb-3 { margin-bottom: var(--lf-3); }
+.lf-mb-4 { margin-bottom: var(--lf-4); }
+.lf-mb-5 { margin-bottom: var(--lf-5); }
+
+/* ---------------------------
+   Optional: Polaris web components polish
+   (non-breaking; only improves visuals)
+---------------------------- */
+
+/* soften default s-page spacing */
+s-page {
+  display: block;
+}
+
+/* give sections a premium separation when they stack */
+s-section + s-section {
+  margin-top: var(--lf-4);
+}
+
+/* links: subtle hover */
+s-link {
+  transition: opacity var(--lf-fast) var(--lf-ease);
+}
+s-link:hover {
+  opacity: 0.85;
+}
+
+/* focus ring on interactive web components */
+s-button:focus-visible,
+s-link:focus-visible,
+s-text-field:focus-within {
+  outline: none;
+  box-shadow: var(--lf-focus);
+  border-radius: var(--lf-r-md);
+}
