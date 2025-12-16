@@ -1,0 +1,723 @@
+// prisma/schema.prisma
+// LeadForm: role-based request/quote flow + storewide theme embed + auto Google Sheets sync + notifications + pixels + analytics + DZ geo.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // directUrl = env("DIRECT_URL") // optional; you prefer to avoid
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Enums
+/// ─────────────────────────────────────────────────────────────────────────────
+
+enum RoleType {
+  individual
+  installer
+  company
+}
+
+enum FormStatus {
+  draft
+  active
+  archived
+}
+
+enum Placement {
+  inline
+  popup
+  slidein
+  landing
+}
+
+enum FieldType {
+  text
+  email
+  tel
+  number
+  textarea
+  select
+  multiselect
+  checkbox
+  radio
+  file
+  date
+  hidden
+}
+
+enum EmbedLocationType {
+  theme_app_embed
+  app_block
+  script_tag
+  headless
+}
+
+enum RequestStatus {
+  received
+  in_review
+  contacted
+  confirmed
+  cancelled
+  spam
+  archived
+}
+
+enum PixelPlatform {
+  facebook
+  tiktok
+  google
+}
+
+enum PixelEventStatus {
+  success
+  failed
+}
+
+enum SheetSyncStatus {
+  queued
+  success
+  failed
+}
+
+enum StorageProvider {
+  supabase
+  s3
+}
+
+enum UploadPurpose {
+  role_document
+  other
+}
+
+enum NotificationTrigger {
+  request_received
+}
+
+enum AnalyticsEventType {
+  form_opened
+  role_selected
+  request_submitted
+  request_sync_success
+  request_sync_failed
+}
+
+enum AnalyticsDimension {
+  none
+  role
+  form
+  placement
+  page
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Tenancy
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model Shop {
+  id             String  @id @default(cuid())
+  shopDomain     String  @unique
+  accessTokenEnc String?
+  scope          String?
+
+  timezone      String? // e.g. "Africa/Algiers"
+  installedAt   DateTime? @db.Timestamptz(6)
+  uninstalledAt DateTime? @db.Timestamptz(6)
+
+  settings ShopSettings?
+
+  roles         Role[]
+  forms         Form[]
+  embeds        Embed[]
+  themeContexts ThemeContext[]
+
+  requests Request[]
+  uploads  Upload[]
+
+  // Notifications: managed recipient list
+  notificationRecipients NotificationRecipient[]
+
+  // Google Sheets
+  oauthGoogle       OAuthGoogle?
+  sheetsConnections SheetsConnection[]
+
+  // Pixels
+  trackingPixels TrackingPixel[]
+  pixelEventLogs PixelEventLog[]
+
+  // Analytics
+  analyticsEvents AnalyticsEvent[]
+  analyticsDaily  AnalyticsDaily[]
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([installedAt])
+}
+
+model ShopSettings {
+  shopId String @id
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  currency String? // "DZD"
+  dfLang   String?
+
+  emailFrom String?
+
+  // Behavior toggles
+  showPriceForIndividuals Boolean @default(false)
+
+  // Default form for App Proxy
+  currentFormId String?
+  currentForm   Form?   @relation("CurrentForm", fields: [currentFormId], references: [id], onDelete: SetNull)
+
+  // If you allow multiple sheets connections, keep deterministic behavior
+  primarySheetsConnectionId String?
+  primarySheetsConnection   SheetsConnection? @relation("PrimarySheetsConnection", fields: [primarySheetsConnectionId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([currentFormId])
+  @@index([primarySheetsConnectionId])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Notifications (recipient list; notify all on request_received)
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model NotificationRecipient {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  email  String
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, email])
+  @@index([shopId, active])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Roles (Individual / Installer / Company)
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model Role {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  type        RoleType
+  title       String
+  description String?
+  active      Boolean  @default(true)
+
+  // Role-specific storefront UX config
+  ui Json?
+
+  // Optional per-role form override
+  formId String?
+  form   Form?   @relation(fields: [formId], references: [id], onDelete: SetNull)
+
+  requirements RoleRequirement[]
+  requests     Request[]
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, type])
+  @@index([shopId, active])
+  @@index([shopId, type])
+}
+
+model RoleRequirement {
+  id     String @id @default(cuid())
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  key         String
+  label       String
+  description String?
+  required    Boolean @default(true)
+
+  acceptedMimeTypes String[] @default([])
+  maxSizeBytes      Int?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([roleId, key])
+  @@index([roleId])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Forms & Fields
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model Form {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  name      String
+  slug      String
+  status    FormStatus @default(draft)
+  placement Placement
+
+  ui       Json?
+  isActive Boolean @default(false)
+
+  fields   FormField[]
+  embeds   Embed[]
+  requests Request[]
+
+  pinnedInSettings ShopSettings[] @relation("CurrentForm")
+
+  // Backrelations
+  roles           Role[]
+  sheetsMappings  SheetsMapping[]
+  analyticsEvents AnalyticsEvent[] @relation("AnalyticsEventForm")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, slug])
+  @@index([shopId, status])
+  @@index([shopId, isActive])
+}
+
+model FormField {
+  id     String @id @default(cuid())
+  formId String
+  form   Form   @relation(fields: [formId], references: [id], onDelete: Cascade)
+
+  type        FieldType
+  label       String
+  nameKey     String
+  placeholder String?
+  helpText    String?
+  required    Boolean   @default(false)
+  visible     Boolean   @default(true)
+  orderIndex  Int
+
+  options      Json?
+  validation   Json?
+  errorMessage String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([formId, nameKey])
+  @@index([formId, orderIndex])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Theme embeds / placement behavior (storewide enable)
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model Embed {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  formId String?
+  form   Form?   @relation(fields: [formId], references: [id], onDelete: SetNull)
+
+  locationType   EmbedLocationType
+  selectorOrPath String?
+  active         Boolean           @default(true)
+
+  // allow one "default" embed per locationType; expand later without schema changes
+  key String @default("default")
+
+  // { placement, roleChooser, buttonLabel, sticky, ... }
+  settings Json?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, locationType, key])
+  @@index([shopId, active])
+  @@index([shopId, locationType])
+}
+
+model ThemeContext {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  themeId      String
+  themeName    String?
+  role         String? // live | draft
+  lastSyncedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, themeId])
+  @@index([shopId, themeId])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Geography (Algeria)
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model GeoWilaya {
+  code   Int    @id
+  nameFr String
+  nameAr String
+
+  communes GeoCommune[]
+  requests Request[]    @relation("RequestWilaya")
+
+  @@index([nameFr])
+  @@index([nameAr])
+}
+
+model GeoCommune {
+  id         String    @id @default(cuid())
+  wilayaCode Int
+  wilaya     GeoWilaya @relation(fields: [wilayaCode], references: [code], onDelete: Cascade)
+
+  nameFr String
+  nameAr String
+
+  requests Request[] @relation("RequestCommune")
+
+  @@unique([wilayaCode, nameFr])
+  @@index([wilayaCode, nameFr])
+  @@index([wilayaCode, nameAr])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Requests (core object) + idempotency
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model Request {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  status RequestStatus @default(received)
+
+  // Idempotency for App Proxy submissions (prevents duplicates)
+  idempotencyKey String?
+
+  // Role chosen in popup
+  roleType RoleType
+  roleId   String?
+  role     Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  // Form used (versioning / analytics)
+  formId String?
+  form   Form?   @relation(fields: [formId], references: [id], onDelete: SetNull)
+
+  firstName String?
+  lastName  String?
+  email     String?
+  phone     String?
+  country   String?
+
+  address String?
+  zip     String?
+
+  wilayaCode Int?
+  communeId  String?
+  wilaya     GeoWilaya?  @relation("RequestWilaya", fields: [wilayaCode], references: [code], onDelete: SetNull)
+  commune    GeoCommune? @relation("RequestCommune", fields: [communeId], references: [id], onDelete: SetNull)
+
+  pageUrl   String?
+  referrer  String?
+  ip        String?
+  userAgent String?
+
+  productId String?
+  variantId String?
+  qty       Int?
+
+  values Json?
+
+  items          RequestItem[]
+  attachments    RequestAttachment[]
+  sheetsSyncLogs SheetsSyncLog[]
+
+  analyticsEvents AnalyticsEvent[] @relation("AnalyticsEventRequest")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, idempotencyKey])
+  @@index([shopId, createdAt])
+  @@index([shopId, status, createdAt])
+  @@index([shopId, roleType, createdAt])
+  @@index([shopId, productId, createdAt])
+  @@index([shopId, wilayaCode, createdAt])
+}
+
+model RequestItem {
+  id        String  @id @default(cuid())
+  requestId String
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  productId String
+  variantId String?
+  qty       Int
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([requestId])
+  @@index([productId])
+}
+
+model Upload {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  provider StorageProvider @default(supabase)
+  bucket   String
+  path     String
+  url      String?
+
+  mimeType  String?
+  sizeBytes Int?
+  checksum  String?
+
+  purpose UploadPurpose @default(role_document)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  requestAttachments RequestAttachment[]
+
+  @@unique([shopId, provider, bucket, path])
+  @@index([shopId, createdAt])
+}
+
+model RequestAttachment {
+  id        String  @id @default(cuid())
+  requestId String
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  uploadId String
+  upload   Upload @relation(fields: [uploadId], references: [id], onDelete: Restrict)
+
+  requirementKey String?
+  label          String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([requestId])
+  @@index([uploadId])
+  @@index([requirementKey])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Pixels
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model TrackingPixel {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  platform PixelPlatform
+  pixelId  String
+  enabled  Boolean       @default(true)
+
+  events Json?
+
+  apiEnabled     Boolean   @default(false)
+  accessTokenEnc String?
+  testCode       String?
+  lastFiredAt    DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, platform])
+  @@index([shopId, enabled])
+}
+
+model PixelEventLog {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  platform  PixelPlatform
+  event     String
+  status    PixelEventStatus
+  payload   Json?
+  error     String?
+  createdAt DateTime         @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, platform, createdAt])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Google Sheets (auto-sync)
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model OAuthGoogle {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  accessTokenEnc  String
+  refreshTokenEnc String
+  expiresAt       DateTime @db.Timestamptz(6)
+  scope           String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+}
+
+model SheetsConnection {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  spreadsheetId    String
+  spreadsheetName  String?
+  defaultSheetName String?
+  active           Boolean @default(true)
+
+  mappings SheetsMapping[]
+  syncLogs SheetsSyncLog[]
+
+  // Backrelation for ShopSettings.primarySheetsConnection
+  primaryForSettings ShopSettings[] @relation("PrimarySheetsConnection")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, spreadsheetId])
+  @@index([shopId, active])
+}
+
+model SheetsMapping {
+  id           String           @id @default(cuid())
+  connectionId String
+  connection   SheetsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  formId String?
+  form   Form?   @relation(fields: [formId], references: [id], onDelete: SetNull)
+
+  roleType RoleType?
+
+  mapping Json
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([connectionId])
+  @@index([formId])
+  @@index([roleType])
+}
+
+model SheetsSyncLog {
+  id           String           @id @default(cuid())
+  connectionId String
+  connection   SheetsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  requestId String
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  status SheetSyncStatus
+  error  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([connectionId, createdAt])
+  @@index([requestId])
+  @@index([status, createdAt])
+}
+
+/// ─────────────────────────────────────────────────────────────────────────────
+/// Analytics (event stream + daily aggregates)
+/// ─────────────────────────────────────────────────────────────────────────────
+
+model AnalyticsEvent {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  type AnalyticsEventType
+
+  // Optional dimensions
+  roleType  RoleType?
+  formId    String?
+  form      Form?      @relation("AnalyticsEventForm", fields: [formId], references: [id], onDelete: SetNull)
+  placement Placement?
+  pageUrl   String?
+  referrer  String?
+
+  // Optional linkage to request (only for submit/sync events)
+  requestId String?
+  request   Request? @relation("AnalyticsEventRequest", fields: [requestId], references: [id], onDelete: SetNull)
+
+  // Extra payload (utm, device hints, etc.)
+  meta Json?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, type, createdAt])
+  @@index([shopId, createdAt])
+  @@index([requestId])
+}
+
+model AnalyticsDaily {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  day DateTime @db.Date
+
+  type      AnalyticsEventType
+  dimension AnalyticsDimension @default(none)
+
+  // For dimension = role -> store RoleType as text
+  // For dimension = form -> store formId
+  // For dimension = placement -> store Placement
+  // For dimension = page -> store normalized path/label
+  key String?
+
+  count Int @default(0)
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, day, type, dimension, key])
+  @@index([shopId, day])
+}
+
+/// ─────────────────────────────────────────────────────────────
+/// Shopify Admin Session storage
+/// ─────────────────────────────────────────────────────────────
+
+model Session {
+  id          String    @id
+  shop        String?
+  state       String?
+  isOnline    Boolean
+  scope       String?
+  expires     DateTime?
+  accessToken String?
+
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean?
+  locale        String?
+  collaborator  Boolean?
+  emailVerified Boolean?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shop])
+}

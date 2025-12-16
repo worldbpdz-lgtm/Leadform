@@ -1,0 +1,37 @@
+{
+  "include": [
+    "env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    "prisma/**/*.ts",
+    ".react-router/types/**/*"
+  ],
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "target": "ES2022",
+
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "noEmit": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+
+    "jsx": "react-jsx",
+
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+
+    "baseUrl": ".",
+    "rootDirs": [".", "./.react-router/types"],
+
+    "types": ["@react-router/node", "vite/client", "@shopify/polaris-types", "node"]
+  }
+}
