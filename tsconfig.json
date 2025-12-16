@@ -1,9 +1,8 @@
 {
   "include": [
     "env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
-    "prisma/**/*.ts",
+    "app/**/*",
+    "prisma/**/*",
     ".react-router/types/**/*"
   ],
   "compilerOptions": {
@@ -23,14 +22,16 @@
 
     "jsx": "react-jsx",
 
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
 
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
 
     "baseUrl": ".",
-    "rootDirs": [".", "./.react-router/types"],
+    "paths": {
+      "~/*": ["app/*"]
+    },
 
     "types": ["@react-router/node", "vite/client", "@shopify/polaris-types", "node"]
   }
