@@ -3,8 +3,8 @@ import { useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData } from "react-router";
 
-import { login } from "~/shopify.server.js";
-import { loginErrorMessage } from "./error.server.js";
+import { login } from "~/shopify.server";
+import { loginErrorMessage } from "./error.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const errors = loginErrorMessage(await login(request));

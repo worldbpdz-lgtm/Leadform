@@ -3,7 +3,7 @@ import { redirect, Form, useLoaderData } from "react-router";
 
 
 import styles from "./styles.module.css";
-import { login } from "~/shopify.server.js";
+import { login } from "~/shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
