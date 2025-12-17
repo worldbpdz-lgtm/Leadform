@@ -421,3 +421,95 @@ s-text-field:focus-within {
   box-shadow: var(--lf-focus);
   border-radius: var(--lf-r-md);
 }
+/* ---------------------------
+   Premium inputs + toolbars
+---------------------------- */
+.lf-input {
+  appearance: none;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: var(--lf-hairline);
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--lf-shadow-xs);
+  color: var(--lf-text);
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    transform var(--lf-fast) var(--lf-ease),
+    box-shadow var(--lf-fast) var(--lf-ease),
+    border-color var(--lf-fast) var(--lf-ease);
+}
+@media (prefers-color-scheme: dark) {
+  .lf-input { background: rgba(17, 28, 51, 0.65); }
+}
+.lf-input:focus {
+  outline: none;
+  box-shadow: var(--lf-focus);
+  border-color: rgba(99, 91, 255, 0.35);
+}
+.lf-input--select {
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(15,23,42,.55) 50%),
+    linear-gradient(135deg, rgba(15,23,42,.55) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 55%,
+    calc(100% - 12px) 55%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+@media (prefers-color-scheme: dark) {
+  .lf-input--select {
+    background-image:
+      linear-gradient(45deg, transparent 50%, rgba(226,232,240,.6) 50%),
+      linear-gradient(135deg, rgba(226,232,240,.6) 50%, transparent 50%);
+  }
+}
+
+.lf-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.lf-search {
+  position: relative;
+  min-width: min(520px, 100%);
+  flex: 1 1 420px;
+}
+.lf-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: var(--lf-text-faint);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.lf-input--search {
+  padding-left: 34px;
+}
+
+.lf-selects {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.lf-bulkbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--lf-r-xl);
+  border: var(--lf-hairline);
+  background: linear-gradient(180deg, rgba(99, 91, 255, 0.10), rgba(99, 91, 255, 0.04));
+  box-shadow: var(--lf-shadow-xs);
+}
