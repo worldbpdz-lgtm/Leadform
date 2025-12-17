@@ -20,15 +20,12 @@ api_version = "2025-10"
   uri = "/webhooks/app/scopes_update"
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products"
+scopes = "read_products,write_products,read_metaobjects,write_metaobjects"
 
 [auth]
-redirect_urls = [
-  "https://leadform-sand.vercel.app/auth/callback"
-]
+redirect_urls = ["https://leadform-sand.vercel.app/auth/callback"]
 
 [app_proxy]
-url = "https://leadform-sand.vercel.app"
+url = "https://leadform-sand.vercel.app/api/proxy"
 prefix = "apps"
 subpath = "leadform"
