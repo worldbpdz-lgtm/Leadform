@@ -1,5 +1,8 @@
+// app/routes/apps.leadform.form.tsx
 import type { LoaderFunctionArgs } from "react-router";
 import prisma from "~/db.server";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { parse as parseQuery } from "node:querystring";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -11,35 +14,32 @@ function json(data: unknown, status = 200) {
   });
 }
 
-/**
- * Shopify App Proxy verification
- * App Proxy sends `shop` + `signature` (or sometimes `hmac`).
- * We verify by hashing the sorted query string excluding signature/hmac.
- */
 type VerifyOk = { ok: true; shop: string };
 type VerifyFail = { ok: false; reason: string };
 type VerifyResult = VerifyOk | VerifyFail;
 
-async function verifyAppProxyRequest(url: URL): Promise<VerifyResult> {
-  const secret = process.env.SHOPIFY_API_SECRET || "";
+function verifyAppProxyRequest(url: URL): VerifyResult {
+  const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
 
+  const provided = url.searchParams.get("signature") || url.searchParams.get("hmac");
   const shop = url.searchParams.get("shop");
-  const sig = url.searchParams.get("signature");
-  const hmac = url.searchParams.get("hmac");
-  const provided = sig || hmac;
 
   if (!shop || !provided) return { ok: false, reason: "Missing shop/signature" };
 
-  const pairs: string[] = [];
-  url.searchParams.forEach((value, key) => {
-    if (key === "signature" || key === "hmac") return;
-    pairs.push(`${key}=${value}`);
-  });
-  pairs.sort();
-  const message = pairs.join("&");
+  const queryHash = parseQuery(url.search.slice(1)) as Record<string, any>;
+  delete queryHash.signature;
+  delete queryHash.hmac;
 
-  const { createHmac, timingSafeEqual } = await import("node:crypto");
+  const message = Object.keys(queryHash)
+    .map((k) => {
+      const v = queryHash[k];
+      const arr = Array.isArray(v) ? v : [v];
+      return `${k}=${arr.join(",")}`;
+    })
+    .sort()
+    .join("");
+
   const digest = createHmac("sha256", secret).update(message).digest("hex");
 
   const a = Buffer.from(digest, "utf8");
@@ -51,7 +51,7 @@ async function verifyAppProxyRequest(url: URL): Promise<VerifyResult> {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
-  const verified = await verifyAppProxyRequest(url);
+  const verified = verifyAppProxyRequest(url);
   if (!verified.ok) return json({ ok: false, error: verified.reason }, 401);
 
   const shopDomain: string = verified.shop;

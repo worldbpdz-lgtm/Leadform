@@ -1,6 +1,9 @@
+// app/routes/apps.leadform.submit.tsx
 import type { ActionFunctionArgs } from "react-router";
 import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { parse as parseQuery } from "node:querystring";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -16,48 +19,36 @@ type VerifyOk = { ok: true; shop: string };
 type VerifyFail = { ok: false; reason: string };
 type VerifyResult = VerifyOk | VerifyFail;
 
-async function verifyAppProxyRequest(url: URL): Promise<VerifyResult> {
+function verifyAppProxyRequest(url: URL): VerifyResult {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
 
-  const providedHmac =
-    url.searchParams.get("hmac") || url.searchParams.get("signature");
+  const provided = url.searchParams.get("signature") || url.searchParams.get("hmac");
   const shop = url.searchParams.get("shop");
 
-  if (!providedHmac || !shop) {
-    return { ok: false, reason: "Missing shop or hmac" };
-  }
+  if (!provided || !shop) return { ok: false, reason: "Missing shop/signature" };
 
-  // Shopify App Proxy rule:
-  // - take original query string
-  // - remove hmac/signature
-  // - DO NOT re-encode values
-  const query = url.search.slice(1);
-  const message = query
-    .split("&")
-    .filter(
-      (part) =>
-        !part.startsWith("hmac=") &&
-        !part.startsWith("signature=")
-    )
+  const queryHash = parseQuery(url.search.slice(1)) as Record<string, any>;
+  delete queryHash.signature;
+  delete queryHash.hmac;
+
+  const message = Object.keys(queryHash)
+    .map((k) => {
+      const v = queryHash[k];
+      const arr = Array.isArray(v) ? v : [v];
+      return `${k}=${arr.join(",")}`;
+    })
     .sort()
-    .join("&");
+    .join("");
 
-  const { createHmac, timingSafeEqual } = await import("node:crypto");
-  const digest = createHmac("sha256", secret)
-    .update(message)
-    .digest("hex");
+  const digest = createHmac("sha256", secret).update(message).digest("hex");
 
   const a = Buffer.from(digest, "utf8");
-  const b = Buffer.from(providedHmac, "utf8");
+  const b = Buffer.from(provided, "utf8");
+  const ok = a.length === b.length && timingSafeEqual(a, b);
 
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    return { ok: false, reason: "Bad signature" };
-  }
-
-  return { ok: true, shop };
+  return ok ? { ok: true, shop } : { ok: false, reason: "Bad signature" };
 }
-
 
 function asRoleType(input: unknown): RoleType | null {
   if (input === "individual") return RoleType.individual;
@@ -90,14 +81,16 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
   }
 
   // FormData (multipart or urlencoded)
-  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
+  if (
+    ct.includes("multipart/form-data") ||
+    ct.includes("application/x-www-form-urlencoded")
+  ) {
     const fd = await request.formData().catch(() => null);
     if (!fd) return null;
 
     const obj: Record<string, any> = {};
     for (const [k, v] of fd.entries()) {
-      // keep File objects as-is
-      obj[k] = v;
+      obj[k] = v; // keep File objects
     }
     return obj;
   }
@@ -109,10 +102,13 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const url = new URL(request.url);
-  const verified = await verifyAppProxyRequest(url);
+
+  const verified = verifyAppProxyRequest(url);
   if (!verified.ok) return json({ ok: false, error: verified.reason }, 401);
 
-  if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (request.method !== "POST") {
+    return json({ ok: false, error: "Method not allowed" }, 405);
+  }
 
   const shopDomain: string = verified.shop;
 
@@ -123,7 +119,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const roleType = asRoleType(body.roleType ?? body.role);
   if (!roleType) return json({ ok: false, error: "roleType/role is required" }, 400);
 
-  // idempotency
   const idempotencyKey =
     stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
 
@@ -135,7 +130,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Resolve active form
+  // Resolve active form (ShopSettings.currentFormId preferred)
   const settings = await prisma.shopSettings.findUnique({
     where: { shopId: shop.id },
     select: { currentFormId: true },
@@ -159,7 +154,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Fields
+  // Basic fields
   const firstName = stringOrNull(body.firstName);
   const lastName = stringOrNull(body.lastName);
   const email = stringOrNull(body.email);
@@ -167,12 +162,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const address = stringOrNull(body.address);
 
   const wilayaCode = parseIntOrNull(body.wilayaCode);
-  // COMMUNE OPTIONAL: "" -> null
-  const communeId = stringOrNull(body.communeId);
+  const communeId = stringOrNull(body.communeId); // optional: "" -> null
 
   const pageUrl = stringOrNull(body.pageUrl);
-  const referrer =
-    stringOrNull(body.referrer) || request.headers.get("referer") || null;
+  const referrer = stringOrNull(body.referrer) || request.headers.get("referer") || null;
 
   const ip =
     stringOrNull(body.ip) ||
@@ -181,7 +174,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const userAgent = request.headers.get("user-agent") ?? null;
 
-  // Items (support theme's single product fields)
+  // Items
   const productId = stringOrNull(body.productId);
   const variantId = stringOrNull(body.variantId);
   const qty = Math.max(1, Number(body.qty ?? 1));
@@ -201,14 +194,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "At least one item is required" }, 400);
   }
 
-  // Document requirement check (if you want to enforce now)
+  // Document requirement (for installer/company)
   const file = body.document instanceof File ? body.document : null;
   const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
   if (needsDoc && !file) {
     return json({ ok: false, error: "Document is required for this role" }, 400);
   }
 
-  // Idempotency dedupe
+  // Idempotency
   if (idempotencyKey) {
     const existing = await prisma.request.findFirst({
       where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
@@ -219,17 +212,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const primary = items[0];
 
-  // values bag (optional)
-  const values =
-    body.values && typeof body.values === "object" ? body.values : {};
+  const values = body.values && typeof body.values === "object" ? body.values : {};
 
   const created = await prisma.request.create({
     data: {
       shopId: shop.id,
-
-      // if your schema uses enum/status values, adjust this one string accordingly
       status: "received",
-
       idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
 
       roleType,
@@ -243,7 +231,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       address,
 
       wilayaCode,
-      communeId, // null allowed
+      communeId,
 
       pageUrl,
       referrer,
@@ -261,9 +249,5 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Upload handling: you currently don't have a storage pipeline shown here.
-  // For now we just acknowledge it exists; next step is wiring to Supabase Storage or DB model.
-  const uploadReceived = Boolean(file);
-
-  return json({ ok: true, requestId: created.id, uploadReceived });
+  return json({ ok: true, requestId: created.id, uploadReceived: Boolean(file) });
 };
