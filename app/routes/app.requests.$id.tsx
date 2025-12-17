@@ -3,7 +3,6 @@ import { Form, Link, useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
-import { AdminPage } from "~/ui/AdminPage";
 
 type LoaderData = {
   request: {
@@ -48,6 +47,24 @@ type LoaderData = {
   };
 };
 
+function statusLabel(s: string) {
+  if (s === "received") return "Received";
+  if (s === "in_review") return "In review";
+  if (s === "contacted") return "Contacted";
+  if (s === "confirmed") return "Confirmed";
+  if (s === "cancelled") return "Cancelled";
+  if (s === "spam") return "Spam";
+  if (s === "archived") return "Archived";
+  return s;
+}
+
+function statusBadgeClass(s: string) {
+  if (s === "confirmed") return "lf-badge lf-badge--approved";
+  if (s === "cancelled" || s === "spam") return "lf-badge lf-badge--rejected";
+  if (s === "received" || s === "in_review" || s === "contacted") return "lf-badge lf-badge--pending";
+  return "lf-badge";
+}
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const id = String(params.id || "");
@@ -75,8 +92,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   if (!req) throw new Response("Request not found", { status: 404 });
 
-  // Fetch product image from Shopify (best effort).
-  // Uses Request.productId if present, else falls back to first item productId.
   const shopifyProductId = req.productId || req.items[0]?.productId || null;
 
   let productTitle: string | null = null;
@@ -89,16 +104,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         query ProductCard($id: ID!) {
           product(id: $id) {
             title
-            featuredImage {
-              url
-              altText
-            }
-            images(first: 1) {
-              nodes {
-                url
-                altText
-              }
-            }
+            featuredImage { url }
+            images(first: 1) { nodes { url } }
           }
         }`,
         { variables: { id: shopifyProductId } }
@@ -106,13 +113,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       const json = await resp.json();
       const p = json?.data?.product;
       productTitle = p?.title ?? null;
-      productImageUrl =
-        p?.featuredImage?.url ??
-        p?.images?.nodes?.[0]?.url ??
-        null;
-    } catch {
-      // ignore
-    }
+      productImageUrl = p?.featuredImage?.url ?? p?.images?.nodes?.[0]?.url ?? null;
+    } catch {}
   }
 
   const data: LoaderData = {
@@ -168,7 +170,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   if (intent === "setStatus") {
     const status = String(formData.get("status") || "");
-    // Validate against your enum values
     const allowed = new Set(["received", "in_review", "contacted", "confirmed", "cancelled", "spam", "archived"]);
     if (!allowed.has(status)) return { ok: false, error: "Invalid status" };
 
@@ -204,13 +205,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "restore") {
-    // Restore to received by default (you can change this)
     await prisma.request.update({ where: where as any, data: { status: "received" } });
     return { ok: true };
   }
 
   if (intent === "deletePermanent") {
-    // Permanent delete (use carefully). This will cascade RequestItem/RequestAttachment by schema.
     await prisma.request.delete({ where: where as any });
     return { ok: true, deleted: true };
   }
@@ -221,41 +220,46 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 export default function RequestDetails() {
   const data = useLoaderData() as LoaderData;
   const r = data.request;
-
-  const statusLabel = (s: string) => {
-    if (s === "received") return "Received";
-    if (s === "in_review") return "In review";
-    if (s === "contacted") return "Contacted";
-    if (s === "confirmed") return "Confirmed";
-    if (s === "cancelled") return "Cancelled";
-    if (s === "spam") return "Spam";
-    if (s === "archived") return "Archived";
-    return s;
-  };
-
   const isArchived = r.status === "archived";
 
   const statusFetcher = useFetcher();
   const editFetcher = useFetcher();
   const archiveFetcher = useFetcher();
 
+  const fullName = `${r.firstName ?? ""} ${r.lastName ?? ""}`.trim() || "Customer";
+
   return (
-    <AdminPage
-      title="Request details"
-      primaryAction={
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+    <div className="lf-enter">
+      {/* Header */}
+      <div className="lf-detail-header">
+        <div>
+          <div className="lf-card-heading" style={{ margin: 0 }}>
+            {fullName}
+            <span className="lf-muted" style={{ marginLeft: 10, fontWeight: 600 }}>
+              #{r.id.slice(0, 10)}…
+            </span>
+          </div>
+          <div className="lf-muted lf-mt-1">
+            Created {new Date(r.createdAt).toLocaleString()} • Role: {r.roleType}
+          </div>
+        </div>
+
+        <div className="lf-btn-row">
+          <span className={statusBadgeClass(r.status)} title={r.status}>
+            <span className="lf-dot" />
+            {statusLabel(r.status)}
+          </span>
+
           <statusFetcher.Form method="post">
             <input type="hidden" name="intent" value="setStatus" />
             <input type="hidden" name="status" value="confirmed" />
-            <button className="lf-btn" type="submit" style={{ borderColor: "rgba(16,185,129,.5)" }}>
-              Confirm
-            </button>
+            <button className="lf-pill lf-pill--success" type="submit">Confirm</button>
           </statusFetcher.Form>
 
           <statusFetcher.Form method="post">
             <input type="hidden" name="intent" value="setStatus" />
             <input type="hidden" name="status" value="cancelled" />
-            <button className="lf-btn" type="submit" style={{ borderColor: "rgba(239,68,68,.5)" }}>
+            <button className="lf-pill" type="submit" style={{ borderColor: "rgba(239,68,68,.30)" }}>
               Cancel
             </button>
           </statusFetcher.Form>
@@ -263,136 +267,156 @@ export default function RequestDetails() {
           {!isArchived ? (
             <archiveFetcher.Form method="post">
               <input type="hidden" name="intent" value="archive" />
-              <button className="lf-btn lf-btn-secondary" type="submit">
-                Archive
-              </button>
+              <button className="lf-pill" type="submit">Archive</button>
             </archiveFetcher.Form>
           ) : (
             <archiveFetcher.Form method="post">
               <input type="hidden" name="intent" value="restore" />
-              <button className="lf-btn lf-btn-secondary" type="submit">
-                Restore
-              </button>
+              <button className="lf-pill" type="submit">Restore</button>
             </archiveFetcher.Form>
           )}
+
+          <Link to="/app/requests">
+            <button type="button" className="lf-pill">Back</button>
+          </Link>
         </div>
-      }
-    >
-      <div className="lf-card">
-        <div className="lf-card-heading" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 650 }}>Request #{r.id}</div>
-            <div className="lf-muted">Created: {new Date(r.createdAt).toLocaleString()}</div>
-          </div>
-          <div className="lf-badge">{statusLabel(r.status)}</div>
-        </div>
+      </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginTop: 14 }}>
-          {/* Left: details + edit */}
-          <div className="lf-card" style={{ margin: 0 }}>
-            <div className="lf-card-title">Customer</div>
+      {/* Content grid */}
+      <div className="lf-detail-grid lf-mt-4">
+        {/* Left */}
+        <div className="lf-card">
+          <div className="lf-card-title">Customer details</div>
 
-            <div className="lf-grid" style={{ marginTop: 12 }}>
-              <div className="lf-col-6"><div className="lf-muted">First name</div><div>{r.firstName ?? "—"}</div></div>
-              <div className="lf-col-6"><div className="lf-muted">Last name</div><div>{r.lastName ?? "—"}</div></div>
-              <div className="lf-col-6"><div className="lf-muted">Email</div><div>{r.email ?? "—"}</div></div>
-              <div className="lf-col-6"><div className="lf-muted">Phone</div><div>{r.phone ?? "—"}</div></div>
-
-              <div className="lf-col-12"><div className="lf-muted">Address</div><div>{r.address ?? "—"}</div></div>
-              <div className="lf-col-6"><div className="lf-muted">ZIP</div><div>{r.zip ?? "—"}</div></div>
-              <div className="lf-col-6"><div className="lf-muted">Country</div><div>{r.country ?? "—"}</div></div>
-
-              <div className="lf-col-6"><div className="lf-muted">Wilaya</div><div>{r.wilayaCode ?? "—"}</div></div>
-              <div className="lf-col-6"><div className="lf-muted">Commune</div><div title={r.communeId ?? ""}>{r.communeId ?? "—"}</div></div>
+          <div className="lf-fields">
+            <div className="lf-field">
+              <div className="lf-field-label">First name</div>
+              <div className="lf-field-value">{r.firstName ?? "—"}</div>
+            </div>
+            <div className="lf-field">
+              <div className="lf-field-label">Last name</div>
+              <div className="lf-field-value">{r.lastName ?? "—"}</div>
+            </div>
+            <div className="lf-field">
+              <div className="lf-field-label">Email</div>
+              <div className="lf-field-value">{r.email ?? "—"}</div>
+            </div>
+            <div className="lf-field">
+              <div className="lf-field-label">Phone</div>
+              <div className="lf-field-value">{r.phone ?? "—"}</div>
             </div>
 
-            <div className="lf-card-title" style={{ marginTop: 16 }}>Edit</div>
-            <editFetcher.Form method="post" style={{ display: "grid", gap: 10, marginTop: 10 }}>
-              <input type="hidden" name="intent" value="saveEdits" />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <input className="lf-input" name="firstName" defaultValue={r.firstName ?? ""} placeholder="First name" />
-                <input className="lf-input" name="lastName" defaultValue={r.lastName ?? ""} placeholder="Last name" />
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <input className="lf-input" name="email" defaultValue={r.email ?? ""} placeholder="Email" />
-                <input className="lf-input" name="phone" defaultValue={r.phone ?? ""} placeholder="Phone" />
-              </div>
-              <input className="lf-input" name="address" defaultValue={r.address ?? ""} placeholder="Address" />
+            <div className="lf-field lf-field--full">
+              <div className="lf-field-label">Address</div>
+              <div className="lf-field-value">{r.address ?? "—"}</div>
+            </div>
+
+            <div className="lf-field">
+              <div className="lf-field-label">Wilaya</div>
+              <div className="lf-field-value">{r.wilayaCode ?? "—"}</div>
+            </div>
+            <div className="lf-field">
+              <div className="lf-field-label">Commune</div>
+              <div className="lf-field-value">{r.communeId ?? "—"}</div>
+            </div>
+
+            <div className="lf-field">
+              <div className="lf-field-label">ZIP</div>
+              <div className="lf-field-value">{r.zip ?? "—"}</div>
+            </div>
+            <div className="lf-field">
+              <div className="lf-field-label">Country</div>
+              <div className="lf-field-value">{r.country ?? "—"}</div>
+            </div>
+          </div>
+
+          <div className="lf-card-title lf-mt-4">Edit</div>
+          <editFetcher.Form method="post" className="lf-edit-form">
+            <input type="hidden" name="intent" value="saveEdits" />
+            <div className="lf-edit-grid">
+              <input className="lf-input" name="firstName" defaultValue={r.firstName ?? ""} placeholder="First name" />
+              <input className="lf-input" name="lastName" defaultValue={r.lastName ?? ""} placeholder="Last name" />
+              <input className="lf-input" name="email" defaultValue={r.email ?? ""} placeholder="Email" />
+              <input className="lf-input" name="phone" defaultValue={r.phone ?? ""} placeholder="Phone" />
+              <input className="lf-input" name="address" defaultValue={r.address ?? ""} placeholder="Address" style={{ gridColumn: "1 / -1" }} />
               <input className="lf-input" name="zip" defaultValue={r.zip ?? ""} placeholder="ZIP" />
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                <button className="lf-btn" type="submit">Save changes</button>
-              </div>
-            </editFetcher.Form>
-
-            <div className="lf-card-title" style={{ marginTop: 16 }}>Danger zone</div>
-            <div className="lf-muted" style={{ marginTop: 8 }}>
-              Archive is reversible. Permanent delete is not.
             </div>
 
-            <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
-              <archiveFetcher.Form method="post">
-                <input type="hidden" name="intent" value="archive" />
-                <button className="lf-btn lf-btn-secondary" type="submit">
-                  Archive
-                </button>
-              </archiveFetcher.Form>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+              <button className="lf-pill lf-pill--primary" type="submit">Save changes</button>
+            </div>
+          </editFetcher.Form>
 
-              <Form
-                method="post"
-                onSubmit={(e) => {
-                  if (!confirm("Delete permanently? This cannot be undone.")) e.preventDefault();
-                }}
-              >
-                <input type="hidden" name="intent" value="deletePermanent" />
-                <button className="lf-btn" type="submit" style={{ borderColor: "rgba(239,68,68,.6)" }}>
-                  Delete permanently
-                </button>
-              </Form>
+          <div className="lf-card-title lf-mt-4">Danger zone</div>
+          <div className="lf-muted">Archive is reversible. Permanent delete is not.</div>
 
-              <Link to="/app/requests">
-                <button type="button" className="lf-btn lf-btn-secondary">Back</button>
-              </Link>
+          <div className="lf-btn-row lf-mt-2">
+            <archiveFetcher.Form method="post">
+              <input type="hidden" name="intent" value="archive" />
+              <button className="lf-pill" type="submit">Archive</button>
+            </archiveFetcher.Form>
+
+            <Form
+              method="post"
+              onSubmit={(e) => {
+                if (!confirm("Delete permanently? This cannot be undone.")) e.preventDefault();
+              }}
+            >
+              <input type="hidden" name="intent" value="deletePermanent" />
+              <button className="lf-pill" type="submit" style={{ borderColor: "rgba(239,68,68,.35)" }}>
+                Delete permanently
+              </button>
+            </Form>
+          </div>
+        </div>
+
+        {/* Right */}
+        <div className="lf-card">
+          <div className="lf-card-title">Product</div>
+
+          <div className="lf-product-card">
+            <div className="lf-product-thumb">
+              {data.product.imageUrl ? (
+                <img src={data.product.imageUrl} alt="" />
+              ) : (
+                <div className="lf-product-thumb--empty" />
+              )}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 720, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {data.product.title ?? "—"}
+              </div>
+              <div className="lf-muted lf-mt-1">
+                Qty: {r.qty ?? r.items[0]?.qty ?? "—"}
+              </div>
+              <div className="lf-muted">
+                Product ID: {r.productId ?? r.items[0]?.productId ?? "—"}
+              </div>
             </div>
           </div>
 
-          {/* Right: product + meta */}
-          <div className="lf-card" style={{ margin: 0 }}>
-            <div className="lf-card-title">Product</div>
-
-            <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
-              <div style={{ width: 88, height: 88, borderRadius: 12, overflow: "hidden", background: "#f4f4f5", flex: "0 0 auto" }}>
-                {data.product.imageUrl ? (
-                  <img src={data.product.imageUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                ) : null}
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 650 }}>{data.product.title ?? "—"}</div>
-                <div className="lf-muted" style={{ marginTop: 4 }}>
-                  Role: {r.roleType}
+          <div className="lf-card-title lf-mt-4">Items</div>
+          <div className="lf-stack">
+            {r.items.length ? (
+              r.items.map((it) => (
+                <div key={it.id} className="lf-mini-card">
+                  <div><span className="lf-muted">Product</span> {it.productId}</div>
+                  <div><span className="lf-muted">Variant</span> {it.variantId ?? "—"}</div>
+                  <div><span className="lf-muted">Qty</span> {it.qty}</div>
                 </div>
-                <div className="lf-muted" style={{ marginTop: 4 }}>
-                  Qty: {r.qty ?? (r.items[0]?.qty ?? "—")}
-                </div>
-              </div>
-            </div>
+              ))
+            ) : (
+              <div className="lf-muted">No items recorded.</div>
+            )}
+          </div>
 
-            <div className="lf-card-title" style={{ marginTop: 16 }}>Items</div>
-            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-              {r.items.length ? r.items.map((it) => (
-                <div key={it.id} className="lf-muted" style={{ border: "1px solid rgba(0,0,0,.06)", borderRadius: 12, padding: 10 }}>
-                  <div>Product ID: {it.productId}</div>
-                  <div>Variant ID: {it.variantId ?? "—"}</div>
-                  <div>Qty: {it.qty}</div>
-                </div>
-              )) : <div className="lf-muted">No items recorded.</div>}
-            </div>
-
-            <div className="lf-card-title" style={{ marginTop: 16 }}>Attachments</div>
-            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-              {r.attachments.length ? r.attachments.map((a) => (
-                <div key={a.id} style={{ border: "1px solid rgba(0,0,0,.06)", borderRadius: 12, padding: 10 }}>
-                  <div style={{ fontWeight: 650 }}>{a.label ?? a.requirementKey ?? "Attachment"}</div>
-                  <div className="lf-muted" style={{ marginTop: 4 }}>
+          <div className="lf-card-title lf-mt-4">Attachments</div>
+          <div className="lf-stack">
+            {r.attachments.length ? (
+              r.attachments.map((a) => (
+                <div key={a.id} className="lf-mini-card">
+                  <div style={{ fontWeight: 700 }}>{a.label ?? a.requirementKey ?? "Attachment"}</div>
+                  <div className="lf-muted lf-mt-1">
                     {a.upload.mimeType ?? "file"} {a.upload.sizeBytes ? `• ${a.upload.sizeBytes} bytes` : ""}
                   </div>
                   {a.upload.url ? (
@@ -403,20 +427,30 @@ export default function RequestDetails() {
                     <div className="lf-muted">No public URL saved.</div>
                   )}
                 </div>
-              )) : <div className="lf-muted">No attachments.</div>}
-            </div>
+              ))
+            ) : (
+              <div className="lf-muted">No attachments.</div>
+            )}
+          </div>
 
-            <div className="lf-card-title" style={{ marginTop: 16 }}>Meta</div>
-            <div className="lf-muted" style={{ marginTop: 8, display: "grid", gap: 6 }}>
-              <div>Page URL: {r.pageUrl ?? "—"}</div>
-              <div>Referrer: {r.referrer ?? "—"}</div>
-              <div>IP: {r.ip ?? "—"}</div>
-              <div>User agent: {r.userAgent ?? "—"}</div>
+          <div className="lf-card-title lf-mt-4">Meta</div>
+          <div className="lf-stack">
+            <div className="lf-mini-card">
+              <div className="lf-muted">Page URL</div>
+              <div style={{ wordBreak: "break-word" }}>{r.pageUrl ?? "—"}</div>
+            </div>
+            <div className="lf-mini-card">
+              <div className="lf-muted">Referrer</div>
+              <div style={{ wordBreak: "break-word" }}>{r.referrer ?? "—"}</div>
+            </div>
+            <div className="lf-mini-card">
+              <div className="lf-muted">IP</div>
+              <div>{r.ip ?? "—"}</div>
             </div>
           </div>
         </div>
       </div>
-    </AdminPage>
+    </div>
   );
 }
 
