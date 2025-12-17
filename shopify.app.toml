@@ -20,7 +20,8 @@ api_version = "2025-10"
   uri = "/webhooks/app/scopes_update"
 
 [access_scopes]
-scopes = "read_products,write_products,read_metaobjects,write_metaobjects"
+scopes = "read_products,write_prod
+ucts,read_metaobjects,write_metaobjects"
 
 [auth]
 redirect_urls = ["https://leadform-sand.vercel.app/auth/callback"]
