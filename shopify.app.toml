@@ -24,4 +24,6 @@ api_version = "2026-01"
 scopes = "write_products"
 
 [auth]
-redirect_urls = [ "https://leadform-sand.vercel.app/api/auth" ]
+redirect_urls = [
+  "https://leadform-sand.vercel.app/auth/callback"
+]
