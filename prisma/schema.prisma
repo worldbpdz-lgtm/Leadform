@@ -699,25 +699,29 @@ model AnalyticsDaily {
 /// ─────────────────────────────────────────────────────────────
 
 model Session {
-  id          String    @id
-  shop        String?
-  state       String?
-  isOnline    Boolean
-  scope       String?
-  expires     DateTime?
-  accessToken String?
+  id                  String   @id
+  shop                String
+  state               String
+  isOnline            Boolean  @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean  @default(false)
+  locale              String?
+  collaborator        Boolean  @default(false)
+  emailVerified       Boolean  @default(false)
 
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean?
-  locale        String?
-  collaborator  Boolean?
-  emailVerified Boolean?
+  // IMPORTANT: required by expiringOfflineAccessTokens/token exchange
+  refreshToken        String?
+  refreshTokenExpires DateTime?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@index([shop])
 }
+

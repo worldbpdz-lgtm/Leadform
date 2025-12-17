@@ -6,10 +6,10 @@ application_url = "https://leadform-sand.vercel.app"
 embedded = true
 
 [build]
-automatically_update_urls_on_dev = true
+automatically_update_urls_on_dev = false
 
 [webhooks]
-api_version = "2026-01"
+api_version = "2025-10"
 
   [[webhooks.subscriptions]]
   topics = [ "app/uninstalled" ]
@@ -27,3 +27,8 @@ scopes = "write_products"
 redirect_urls = [
   "https://leadform-sand.vercel.app/auth/callback"
 ]
+
+[app_proxy]
+url = "https://leadform-sand.vercel.app"
+prefix = "apps"
+subpath = "leadform"
