@@ -52,10 +52,45 @@ function asRoleType(input: unknown): RoleType | null {
   return null;
 }
 
-function parseWilayaCode(input: unknown): number | null {
-  if (input === null || input === undefined || input === "") return null;
-  const n = Number(input);
+function parseIntOrNull(input: unknown): number | null {
+  if (input === null || input === undefined) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  const n = Number(s);
   return Number.isInteger(n) ? n : null;
+}
+
+function stringOrNull(input: unknown): string | null {
+  if (input === null || input === undefined) return null;
+  const s = String(input).trim();
+  return s ? s : null;
+}
+
+async function readBody(request: Request): Promise<Record<string, any> | null> {
+  const ct = request.headers.get("content-type") || "";
+
+  // JSON
+  if (ct.includes("application/json")) {
+    const body = await request.json().catch(() => null);
+    return body && typeof body === "object" ? (body as any) : null;
+  }
+
+  // FormData (multipart or urlencoded)
+  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
+    const fd = await request.formData().catch(() => null);
+    if (!fd) return null;
+
+    const obj: Record<string, any> = {};
+    for (const [k, v] of fd.entries()) {
+      // keep File objects as-is
+      obj[k] = v;
+    }
+    return obj;
+  }
+
+  // Fallback: try JSON
+  const body = await request.json().catch(() => null);
+  return body && typeof body === "object" ? (body as any) : null;
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -63,20 +98,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const verified = await verifyAppProxyRequest(url);
   if (!verified.ok) return json({ ok: false, error: verified.reason }, 401);
 
-  if (request.method !== "POST") {
-    return json({ ok: false, error: "Method not allowed" }, 405);
-  }
+  if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   const shopDomain: string = verified.shop;
 
-  const body = await request.json().catch(() => null);
-  if (!body || typeof body !== "object") return json({ ok: false, error: "Invalid JSON" }, 400);
+  const body = await readBody(request);
+  if (!body) return json({ ok: false, error: "Invalid body" }, 400);
 
-  const roleType = asRoleType((body as any).roleType);
-  if (!roleType) return json({ ok: false, error: "roleType is required" }, 400);
+  // accept roleType OR role (theme uses role)
+  const roleType = asRoleType(body.roleType ?? body.role);
+  if (!roleType) return json({ ok: false, error: "roleType/role is required" }, 400);
 
+  // idempotency
   const idempotencyKey =
-    (body as any).idempotencyKey || request.headers.get("Idempotency-Key") || null;
+    stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
 
   // Ensure Shop exists
   const shop = await prisma.shop.upsert({
@@ -86,7 +121,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Resolve active form (ShopSettings.currentFormId preferred)
+  // Resolve active form
   const settings = await prisma.shopSettings.findUnique({
     where: { shopId: shop.id },
     select: { currentFormId: true },
@@ -105,64 +140,61 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       select: { id: true },
     }));
 
-  // Resolve roleId
   const role = await prisma.role.findFirst({
     where: { shopId: shop.id, type: roleType, active: true },
     select: { id: true },
   });
 
-  // Basic fields
-  const firstName = (body as any).firstName ?? null;
-  const lastName = (body as any).lastName ?? null;
-  const email = (body as any).email ?? null;
-  const phone = (body as any).phone ?? null;
-  const address = (body as any).address ?? null;
+  // Fields
+  const firstName = stringOrNull(body.firstName);
+  const lastName = stringOrNull(body.lastName);
+  const email = stringOrNull(body.email);
+  const phone = stringOrNull(body.phone);
+  const address = stringOrNull(body.address);
 
-  const wilayaCode = parseWilayaCode((body as any).wilayaCode);
-  const communeId = (body as any).communeId ? String((body as any).communeId) : null;
+  const wilayaCode = parseIntOrNull(body.wilayaCode);
+  // COMMUNE OPTIONAL: "" -> null
+  const communeId = stringOrNull(body.communeId);
 
-  const pageUrl = (body as any).pageUrl ?? null;
-  const referrer = (body as any).referrer ?? request.headers.get("referer") ?? null;
+  const pageUrl = stringOrNull(body.pageUrl);
+  const referrer =
+    stringOrNull(body.referrer) || request.headers.get("referer") || null;
 
   const ip =
-    (body as any).ip ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    stringOrNull(body.ip) ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     null;
 
   const userAgent = request.headers.get("user-agent") ?? null;
 
-  // Items: accept either items[] OR productId/variantId/qty
-  const itemsIn = Array.isArray((body as any).items) ? (body as any).items : null;
-  const fallbackItem =
-    (body as any).productId
-      ? [
-          {
-            productId: (body as any).productId,
-            variantId: (body as any).variantId ?? null,
-            qty: (body as any).qty ?? 1,
-          },
-        ]
-      : null;
+  // Items (support theme's single product fields)
+  const productId = stringOrNull(body.productId);
+  const variantId = stringOrNull(body.variantId);
+  const qty = Math.max(1, Number(body.qty ?? 1));
 
-  const items = (itemsIn ?? fallbackItem)?.map((it: any) => ({
-    productId: String(it.productId),
-    variantId: it.variantId ? String(it.variantId) : null,
-    qty: Math.max(1, Number(it.qty ?? 1)),
-  }));
+  const items =
+    Array.isArray(body.items) && body.items.length
+      ? body.items.map((it: any) => ({
+          productId: String(it.productId),
+          variantId: it.variantId ? String(it.variantId) : null,
+          qty: Math.max(1, Number(it.qty ?? 1)),
+        }))
+      : productId
+      ? [{ productId, variantId, qty }]
+      : null;
 
   if (!items || items.length === 0) {
     return json({ ok: false, error: "At least one item is required" }, 400);
   }
 
-  const primary = items[0];
+  // Document requirement check (if you want to enforce now)
+  const file = body.document instanceof File ? body.document : null;
+  const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
+  if (needsDoc && !file) {
+    return json({ ok: false, error: "Document is required for this role" }, 400);
+  }
 
-  // Safe values bag (do NOT store full body)
-  const values =
-    typeof (body as any).values === "object" && (body as any).values
-      ? (body as any).values
-      : {};
-
-  // Idempotency (prevents duplicates)
+  // Idempotency dedupe
   if (idempotencyKey) {
     const existing = await prisma.request.findFirst({
       where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
@@ -171,11 +203,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (existing) return json({ ok: true, requestId: existing.id, deduped: true });
   }
 
+  const primary = items[0];
+
+  // values bag (optional)
+  const values =
+    body.values && typeof body.values === "object" ? body.values : {};
+
   const created = await prisma.request.create({
     data: {
       shopId: shop.id,
 
+      // if your schema uses enum/status values, adjust this one string accordingly
       status: "received",
+
       idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
 
       roleType,
@@ -189,14 +229,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       address,
 
       wilayaCode,
-      communeId,
+      communeId, // null allowed
 
       pageUrl,
       referrer,
       ip,
       userAgent,
 
-      // keep Request top-level columns consistent with items
       productId: primary.productId,
       variantId: primary.variantId,
       qty: primary.qty,
@@ -208,5 +247,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  return json({ ok: true, requestId: created.id });
+  // Upload handling: you currently don't have a storage pipeline shown here.
+  // For now we just acknowledge it exists; next step is wiring to Supabase Storage or DB model.
+  const uploadReceived = Boolean(file);
+
+  return json({ ok: true, requestId: created.id, uploadReceived });
 };
