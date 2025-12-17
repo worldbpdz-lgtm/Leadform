@@ -26,6 +26,6 @@ scopes = "read_products,write_products,read_metaobjects,write_metaobjects"
 redirect_urls = ["https://leadform-sand.vercel.app/auth/callback"]
 
 [app_proxy]
-url = "https://leadform-sand.vercel.app/api/proxy"
+url = "https://leadform-sand.vercel.app/apps/leadform"
 prefix = "apps"
 subpath = "leadform"
