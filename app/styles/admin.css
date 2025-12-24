@@ -894,3 +894,95 @@ s-text-field:focus-within {
   background: linear-gradient(180deg, rgba(239,68,68,0.08), rgba(239,68,68,0.03));
   box-shadow: var(--lf-shadow-xs);
 }
+/* =========================
+   Form Builder
+========================= */
+.lf-forms-grid{
+  display:grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.lf-builder{
+  display:grid;
+  grid-template-columns: 0.85fr 1.6fr 0.95fr;
+  gap: clamp(14px, 1.5vw, 22px);
+}
+@media (max-width: 1180px){
+  .lf-builder{ grid-template-columns: 1fr; }
+}
+
+.lf-builder-col--wide{ min-width: 0; }
+
+.lf-builder-top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lf-form-meta{
+  display:grid;
+  grid-template-columns: 1.2fr .9fr .9fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 980px){
+  .lf-form-meta{ grid-template-columns: 1fr; }
+}
+
+.lf-palette{
+  display:flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.lf-canvas{
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.lf-canvas-row{
+  display:flex;
+  gap: 12px;
+  align-items:flex-start;
+  padding: 12px;
+  border-radius: 16px;
+  border: var(--lf-hairline);
+  background: rgba(255,255,255,.55);
+  backdrop-filter: blur(10px);
+  cursor:pointer;
+  transition: box-shadow var(--lf-fast) var(--lf-ease), border-color var(--lf-fast) var(--lf-ease), transform var(--lf-fast) var(--lf-ease);
+}
+@media (prefers-color-scheme: dark){
+  .lf-canvas-row{ background: rgba(17, 28, 51, 0.55); }
+}
+.lf-canvas-row:hover{
+  transform: translateY(-1px);
+  box-shadow: var(--lf-shadow-sm);
+  border-color: var(--lf-border-strong);
+}
+.lf-canvas-row.is-active{
+  border-color: rgba(99, 91, 255, 0.35);
+  box-shadow: 0 0 0 3px rgba(99, 91, 255, 0.14), var(--lf-shadow-xs);
+}
+
+.lf-canvas-grip{
+  display:flex;
+  flex-direction:column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.lf-inspector{ display:flex; flex-direction:column; gap: 12px; }
+
+.lf-role-pills{
+  display:flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
