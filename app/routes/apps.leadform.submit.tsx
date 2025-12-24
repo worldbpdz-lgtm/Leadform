@@ -4,8 +4,11 @@ import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parse as parseQuery } from "node:querystring";
-import { createSignedUrl, makeRequestUploadPath, uploadToSupabase, validateUploadFile } from "~/lib/uploads.server";
-
+import {
+  makeRequestUploadPath,
+  uploadToSupabase,
+  validateUploadFile,
+} from "~/lib/uploads.server";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -25,7 +28,8 @@ function verifyAppProxyRequest(url: URL): VerifyResult {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
 
-  const provided = url.searchParams.get("signature") || url.searchParams.get("hmac");
+  const provided =
+    url.searchParams.get("signature") || url.searchParams.get("hmac");
   const shop = url.searchParams.get("shop");
 
   if (!provided || !shop) return { ok: false, reason: "Missing shop/signature" };
@@ -73,6 +77,13 @@ function stringOrNull(input: unknown): string | null {
   return s ? s : null;
 }
 
+function asFiles(val: any): File[] {
+  if (!val) return [];
+  if (val instanceof File) return [val];
+  if (Array.isArray(val)) return val.filter((x) => x instanceof File);
+  return [];
+}
+
 async function readBody(request: Request): Promise<Record<string, any> | null> {
   const ct = request.headers.get("content-type") || "";
 
@@ -92,7 +103,10 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
 
     const obj: Record<string, any> = {};
     for (const [k, v] of fd.entries()) {
-      obj[k] = v; // keep File objects
+      // Preserve repeated keys as arrays (required for multi-file uploads)
+      if (obj[k] === undefined) obj[k] = v;
+      else if (Array.isArray(obj[k])) obj[k].push(v);
+      else obj[k] = [obj[k], v];
     }
     return obj;
   }
@@ -119,10 +133,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // accept roleType OR role (theme uses role)
   const roleType = asRoleType(body.roleType ?? body.role);
-  if (!roleType) return json({ ok: false, error: "roleType/role is required" }, 400);
+  if (!roleType)
+    return json({ ok: false, error: "roleType/role is required" }, 400);
 
   const idempotencyKey =
-    stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
+    stringOrNull(body.idempotencyKey) ||
+    request.headers.get("Idempotency-Key") ||
+    null;
 
   // Ensure Shop exists
   const shop = await prisma.shop.upsert({
@@ -167,7 +184,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const communeId = stringOrNull(body.communeId); // optional: "" -> null
 
   const pageUrl = stringOrNull(body.pageUrl);
-  const referrer = stringOrNull(body.referrer) || request.headers.get("referer") || null;
+  const referrer =
+    stringOrNull(body.referrer) || request.headers.get("referer") || null;
 
   const ip =
     stringOrNull(body.ip) ||
@@ -196,34 +214,52 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "At least one item is required" }, 400);
   }
 
-  // Document requirement (for installer/company)
-const file = body.document instanceof File ? body.document : null;
-const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
-if (needsDoc && !file) {
-  return json({ ok: false, error: "Document is required for this role" }, 400);
-}
+  // Documents (up to 10 PDFs/images; mix allowed)
+  // Accept: "document" and/or "documents" and/or repeated keys
+  const files = [...asFiles(body.document), ...asFiles(body.documents)].filter(
+    (f) => f && f.size > 0
+  );
 
-// Load role requirement (optional but preferred)
-const requirement =
-  needsDoc && role?.id
-    ? await prisma.roleRequirement.findFirst({
-        where: { roleId: role.id, required: true },
-        orderBy: { createdAt: "asc" },
-        select: { key: true, label: true, acceptedMimeTypes: true, maxSizeBytes: true },
-      })
-    : null;
+  const needsDoc =
+    roleType === RoleType.installer || roleType === RoleType.company;
 
-if (file) {
-  try {
-    validateUploadFile(file, {
-      allowedMimeTypes: requirement?.acceptedMimeTypes?.length ? requirement.acceptedMimeTypes : undefined,
-      maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
-    });
-  } catch (e: any) {
-    return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+  if (needsDoc && files.length === 0) {
+    return json({ ok: false, error: "Document is required for this role" }, 400);
   }
-}
 
+  if (files.length > 10) {
+    return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
+  }
+
+  // Load role requirement (optional but preferred)
+  const requirement =
+    needsDoc && role?.id
+      ? await prisma.roleRequirement.findFirst({
+          where: { roleId: role.id, required: true },
+          orderBy: { createdAt: "asc" },
+          select: {
+            key: true,
+            label: true,
+            acceptedMimeTypes: true,
+            maxSizeBytes: true,
+          },
+        })
+      : null;
+
+  // Validate each file against role constraints (or defaults)
+  for (const f of files) {
+    try {
+      validateUploadFile(f, {
+        allowedMimeTypes:
+          requirement?.acceptedMimeTypes?.length
+            ? requirement.acceptedMimeTypes
+            : undefined,
+        maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
+      });
+    } catch (e: any) {
+      return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+    }
+  }
 
   // Idempotency
   if (idempotencyKey) {
@@ -231,91 +267,95 @@ if (file) {
       where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
       select: { id: true },
     });
-    if (existing) return json({ ok: true, requestId: existing.id, deduped: true });
+    if (existing) {
+      return json({ ok: true, requestId: existing.id, deduped: true });
+    }
   }
 
   const primary = items[0];
-
   const values = body.values && typeof body.values === "object" ? body.values : {};
 
   const created = await prisma.request.create({
-  data: {
-    shopId: shop.id,
-    status: "received",
-    idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
+    data: {
+      shopId: shop.id,
+      status: "received",
+      idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
 
-    roleType,
-    roleId: role?.id ?? null,
-    formId: form?.id ?? null,
+      roleType,
+      roleId: role?.id ?? null,
+      formId: form?.id ?? null,
 
-    firstName,
-    lastName,
-    email,
-    phone,
-    address,
+      firstName,
+      lastName,
+      email,
+      phone,
+      address,
 
-    wilayaCode,
-    communeId,
+      wilayaCode,
+      communeId,
 
-    pageUrl,
-    referrer,
-    ip,
-    userAgent,
+      pageUrl,
+      referrer,
+      ip,
+      userAgent,
 
-    productId: primary.productId,
-    variantId: primary.variantId,
-    qty: primary.qty,
+      productId: primary.productId,
+      variantId: primary.variantId,
+      qty: primary.qty,
 
-    values,
+      values,
 
-    items: { create: items },
-  },
-  select: { id: true },
-});
-
-// If a file exists, upload it and link it to the request
-if (file) {
-  const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads"; // keep your current env name
-  const path = makeRequestUploadPath({
-    shopId: shop.id,
-    requestId: created.id,
-    originalName: file.name || "document",
+      items: { create: items },
+    },
+    select: { id: true },
   });
 
-  try {
-    const up = await uploadToSupabase({ bucket, path, file });
+  // Upload and create attachment rows
+  if (files.length) {
+    const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
 
-    const uploadRow = await prisma.upload.create({
-      data: {
-        shopId: shop.id,
-        provider: "supabase",
-        bucket,
-        path,
-        url: null, // we will use signed URLs in admin
-        mimeType: up.mimeType,
-        sizeBytes: up.sizeBytes,
-        checksum: up.checksum,
-        purpose: "role_document",
-      },
-      select: { id: true },
-    });
+    try {
+      for (const f of files) {
+        const path = makeRequestUploadPath({
+          shopId: shop.id,
+          requestId: created.id,
+          originalName: f.name || "document",
+        });
 
-    await prisma.requestAttachment.create({
-      data: {
-        requestId: created.id,
-        uploadId: uploadRow.id,
-        requirementKey: requirement?.key ?? "document",
-        label: requirement?.label ?? "Document",
-      },
-      select: { id: true },
-    });
-  } catch (e: any) {
-    // enforce "required doc" by removing the request if upload failed
-    await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
-    return json({ ok: false, error: e?.message || "Upload failed" }, 500);
+        const up = await uploadToSupabase({ bucket, path, file: f });
+
+        const uploadRow = await prisma.upload.create({
+          data: {
+            shopId: shop.id,
+            provider: "supabase",
+            bucket,
+            path,
+            url: null, // we use signed URLs on admin side
+            mimeType: up.mimeType,
+            sizeBytes: up.sizeBytes,
+            checksum: up.checksum,
+            purpose: "role_document",
+          },
+          select: { id: true },
+        });
+
+        await prisma.requestAttachment.create({
+          data: {
+            requestId: created.id,
+            uploadId: uploadRow.id,
+            requirementKey: requirement?.key ?? "document",
+            // show original filename in admin
+            label: f.name || requirement?.label || "Document",
+          },
+          select: { id: true },
+        });
+      }
+    } catch (e: any) {
+      // If installer/company requires docs, enforce by removing the request if upload fails
+      await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
+      return json({ ok: false, error: e?.message || "Upload failed" }, 500);
+    }
   }
-}
 
-return json({ ok: true, requestId: created.id, uploadReceived: Boolean(file) });
-
+  return json({ ok: true, requestId: created.id, uploadReceived: files.length });
 };

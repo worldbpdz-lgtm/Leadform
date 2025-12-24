@@ -4,7 +4,7 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { Form, Link, useFetcher, useLoaderData } from "react-router";
+import { Link, useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
@@ -46,7 +46,7 @@ type LoaderData = {
       label: string | null;
       requirementKey: string | null;
       upload: {
-        url: string | null;
+        url: string | null; // signed
         bucket: string;
         path: string;
         mimeType: string | null;
@@ -86,6 +86,14 @@ function asShopifyGid(kind: "Product" | "ProductVariant", idOrGid: string | null
   return null;
 }
 
+function formatBytes(bytes: number | null) {
+  if (!bytes || bytes <= 0) return null;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB`;
+}
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
   const id = String(params.id || "");
@@ -101,6 +109,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     include: {
       items: { select: { id: true, productId: true, variantId: true, qty: true } },
       attachments: {
+        orderBy: { createdAt: "asc" },
         select: {
           id: true,
           label: true,
@@ -120,42 +129,49 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     req.wilayaCode
       ? prisma.geoWilaya.findUnique({
           where: { code: req.wilayaCode },
-          select: { nameFr: true, nameAr: true, code: true },
+          select: { nameFr: true, nameAr: true },
         })
       : Promise.resolve(null),
     req.communeId
       ? prisma.geoCommune.findUnique({
           where: { id: req.communeId },
-          select: { nameFr: true, nameAr: true, id: true },
+          select: { nameFr: true, nameAr: true },
         })
       : Promise.resolve(null),
   ]);
-  const attachmentsWithSigned = await Promise.all(
-  req.attachments.map(async (a) => {
-    const signedUrl = await createSignedUrl({
-      bucket: a.upload.bucket,
-      path: a.upload.path,
-      expiresInSeconds: 60 * 60,
-    });
-
-    return {
-      id: a.id,
-      label: a.label,
-      requirementKey: a.requirementKey,
-      upload: {
-        url: signedUrl, // signed (viewable) URL
-        bucket: a.upload.bucket,
-        path: a.upload.path,
-        mimeType: a.upload.mimeType,
-        sizeBytes: a.upload.sizeBytes,
-      },
-    };
-  })
-);
-
 
   const wilayaName = wilayaRow?.nameFr ?? wilayaRow?.nameAr ?? null;
   const communeName = communeRow?.nameFr ?? communeRow?.nameAr ?? null;
+
+  // Signed URLs for attachments (always prefer signed for Supabase private buckets)
+  const attachmentsWithSigned: LoaderData["request"]["attachments"] = await Promise.all(
+    req.attachments.map(async (a) => {
+      // If url is already saved and you rely on it, keep fallback to it
+      let signedUrl: string | null = null;
+      try {
+        signedUrl = await createSignedUrl({
+          bucket: a.upload.bucket,
+          path: a.upload.path,
+          expiresInSeconds: 60 * 60,
+        });
+      } catch {
+        signedUrl = a.upload.url ?? null;
+      }
+
+      return {
+        id: a.id,
+        label: a.label,
+        requirementKey: a.requirementKey,
+        upload: {
+          url: signedUrl,
+          bucket: a.upload.bucket,
+          path: a.upload.path,
+          mimeType: a.upload.mimeType,
+          sizeBytes: a.upload.sizeBytes,
+        },
+      };
+    })
+  );
 
   // Product
   const storedProductId = req.productId || req.items[0]?.productId || null;
@@ -195,7 +211,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   }
 
-  // Customer-facing URL (NOT admin editor)
   const baseStoreUrl = primaryDomainUrl || `https://${session.shop}`;
   const storefrontUrl = productHandle ? `${baseStoreUrl}/products/${productHandle}` : null;
 
@@ -400,7 +415,6 @@ export default function RequestDetails() {
                 <input className="lf-input" name="address" defaultValue={r.address ?? ""} />
               </div>
 
-              {/* Names (not number/id) */}
               <div className="lf-field">
                 <div className="lf-field-label">Wilaya</div>
                 <div className="lf-field-value">{r.wilayaName ?? "—"}</div>
@@ -437,11 +451,7 @@ export default function RequestDetails() {
             >
               <div className="lf-product-card">
                 <div className="lf-product-thumb">
-                  {data.product.imageUrl ? (
-                    <img src={data.product.imageUrl} alt="" />
-                  ) : (
-                    <div className="lf-product-thumb--empty" />
-                  )}
+                  {data.product.imageUrl ? <img src={data.product.imageUrl} alt="" /> : <div className="lf-product-thumb--empty" />}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div
@@ -462,33 +472,80 @@ export default function RequestDetails() {
             <div className="lf-muted">Product link not available.</div>
           )}
 
+          {/* Attachments: show ONLY if present */}
           {r.attachments.length ? (
             <>
               <div className="lf-card-title lf-mt-4">Attachments</div>
               <div className="lf-stack">
-                {r.attachments.map((a) => (
-                  <div key={a.id} className="lf-mini-card">
-                    <div style={{ fontWeight: 700 }}>{a.label ?? a.requirementKey ?? "Attachment"}</div>
-                    <div className="lf-muted lf-mt-1">
-                      {a.upload.mimeType ?? "file"} {a.upload.sizeBytes ? `• ${a.upload.sizeBytes} bytes` : ""}
+                {r.attachments.map((a) => {
+                  const url = a.upload.url;
+                  const mime = (a.upload.mimeType || "").toLowerCase();
+                  const isImage = mime.startsWith("image/");
+                  const isPdf = mime === "application/pdf";
+                  const size = formatBytes(a.upload.sizeBytes);
+
+                  return (
+                    <div key={a.id} className="lf-mini-card">
+                      <div style={{ fontWeight: 700 }}>
+                        {a.label ?? a.requirementKey ?? "Attachment"}
+                      </div>
+
+                      <div className="lf-muted lf-mt-1">
+                        {a.upload.mimeType ?? "file"}
+                        {size ? ` • ${size}` : ""}
+                      </div>
+
+                      {url ? (
+                        <>
+                          <div style={{ marginTop: 10 }}>
+                            <a className="lf-link" href={url} target="_blank" rel="noreferrer">
+                              {isPdf ? "Open PDF" : "Open file"}
+                            </a>
+                          </div>
+
+                          {isImage ? (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ display: "block", marginTop: 10 }}
+                            >
+                              <img
+                                src={url}
+                                alt=""
+                                style={{
+                                  width: "100%",
+                                  maxHeight: 260,
+                                  objectFit: "cover",
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(0,0,0,.06)",
+                                }}
+                              />
+                            </a>
+                          ) : null}
+
+                          {isPdf ? (
+                            <div style={{ marginTop: 10 }}>
+                              <iframe
+                                title="PDF preview"
+                                src={url}
+                                style={{
+                                  width: "100%",
+                                  height: 420,
+                                  borderRadius: 12,
+                                  border: "1px solid rgba(0,0,0,.06)",
+                                }}
+                              />
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
                     </div>
-                    {a.upload.url ? (
-                      <a className="lf-link" href={a.upload.url} target="_blank" rel="noreferrer">
-                        Open file
-                      </a>
-                    ) : (
-                      <div className="lf-muted">No public URL saved.</div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </>
-          ) : (
-            <>
-              <div className="lf-card-title lf-mt-4">Attachments</div>
-              <div className="lf-muted">No attachments.</div>
-            </>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
