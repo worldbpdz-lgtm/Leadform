@@ -26,6 +26,10 @@ type LoaderData = {
     wilayaCode: number | null;
     communeId: string | null;
 
+    // display names
+    wilayaName: string | null;
+    communeName: string | null;
+
     pageUrl: string | null;
     referrer: string | null;
     ip: string | null;
@@ -40,14 +44,20 @@ type LoaderData = {
       id: string;
       label: string | null;
       requirementKey: string | null;
-      upload: { url: string | null; bucket: string; path: string; mimeType: string | null; sizeBytes: number | null };
+      upload: {
+        url: string | null;
+        bucket: string;
+        path: string;
+        mimeType: string | null;
+        sizeBytes: number | null;
+      };
     }>;
   };
 
   product: {
     title: string | null;
     imageUrl: string | null;
-    adminUrl: string | null; // clickable
+    storefrontUrl: string | null; // customer-facing URL
   };
 };
 
@@ -65,20 +75,13 @@ function statusBadgeClass(s: string) {
   return "lf-badge";
 }
 
-// Shopify GraphQL needs GIDs. Your DB often stores numeric IDs.
-// This makes the query reliable without changing other files.
-function asShopifyGid(kind: "Product" | "ProductVariant", idOrGid: string | null): string | null {
+// Your DB sometimes stores numeric IDs, but Shopify GraphQL needs GIDs.
+function asShopifyGid(kind: "Product" | "ProductVariant", idOrGid: string | null) {
   if (!idOrGid) return null;
   const raw = String(idOrGid).trim();
   if (!raw) return null;
   if (raw.startsWith("gid://shopify/")) return raw;
-
-  // If numeric: make a GID
-  if (/^\d+$/.test(raw)) {
-    return `gid://shopify/${kind}/${raw}`;
-  }
-
-  // Unknown format; avoid breaking query
+  if (/^\d+$/.test(raw)) return `gid://shopify/${kind}/${raw}`;
   return null;
 }
 
@@ -101,7 +104,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           id: true,
           label: true,
           requirementKey: true,
-          upload: { select: { url: true, bucket: true, path: true, mimeType: true, sizeBytes: true } },
+          upload: {
+            select: { url: true, bucket: true, path: true, mimeType: true, sizeBytes: true },
+          },
         },
       },
     },
@@ -109,32 +114,43 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   if (!req) throw new Response("Request not found", { status: 404 });
 
-  // Prefer the denormalized Request.productId, fallback to first item
+  // Geo names (robust: no relation assumptions)
+  const [wilayaRow, communeRow] = await Promise.all([
+    req.wilayaCode
+      ? prisma.geoWilaya.findUnique({
+          where: { code: req.wilayaCode },
+          select: { nameFr: true, nameAr: true, code: true },
+        })
+      : Promise.resolve(null),
+    req.communeId
+      ? prisma.geoCommune.findUnique({
+          where: { id: req.communeId },
+          select: { nameFr: true, nameAr: true, id: true },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  const wilayaName = wilayaRow?.nameFr ?? wilayaRow?.nameAr ?? null;
+  const communeName = communeRow?.nameFr ?? communeRow?.nameAr ?? null;
+
+  // Product
   const storedProductId = req.productId || req.items[0]?.productId || null;
   const productGid = asShopifyGid("Product", storedProductId);
 
   let productTitle: string | null = null;
   let productImageUrl: string | null = null;
-
-  // Admin URL in Shopify uses numeric product id; keep it clickable.
-  const numericProductId =
-    storedProductId && /^\d+$/.test(String(storedProductId))
-      ? String(storedProductId)
-      : storedProductId?.startsWith("gid://shopify/Product/")
-      ? String(storedProductId).split("/").pop() || null
-      : null;
-
-  const productAdminUrl = numericProductId
-    ? `https://admin.shopify.com/store/${session.shop.replace(".myshopify.com", "")}/products/${numericProductId}`
-    : null;
+  let productHandle: string | null = null;
+  let primaryDomainUrl: string | null = null;
 
   if (productGid) {
     try {
       const resp = await admin.graphql(
         `#graphql
-        query ProductCard($id: ID!) {
+        query ProductCardForStorefront($id: ID!) {
+          shop { primaryDomain { url } }
           product(id: $id) {
             title
+            handle
             featuredImage { url }
             images(first: 1) { nodes { url } }
           }
@@ -144,12 +160,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
       const json = await resp.json();
       const p = json?.data?.product;
+      const shop = json?.data?.shop;
+
+      primaryDomainUrl = shop?.primaryDomain?.url ?? null;
       productTitle = p?.title ?? null;
+      productHandle = p?.handle ?? null;
       productImageUrl = p?.featuredImage?.url ?? p?.images?.nodes?.[0]?.url ?? null;
     } catch {
       // keep nulls
     }
   }
+
+  // Customer-facing URL (NOT admin editor)
+  const baseStoreUrl = primaryDomainUrl || `https://${session.shop}`;
+  const storefrontUrl = productHandle ? `${baseStoreUrl}/products/${productHandle}` : null;
 
   const data: LoaderData = {
     request: {
@@ -167,6 +191,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
       wilayaCode: req.wilayaCode,
       communeId: req.communeId,
+      wilayaName,
+      communeName,
 
       pageUrl: req.pageUrl,
       referrer: req.referrer,
@@ -180,7 +206,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       items: req.items,
       attachments: req.attachments,
     },
-    product: { title: productTitle, imageUrl: productImageUrl, adminUrl: productAdminUrl },
+    product: { title: productTitle, imageUrl: productImageUrl, storefrontUrl },
   };
 
   return data;
@@ -200,7 +226,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const where = { id, shopId: shopRow.id };
 
-  // Keep your existing intents intact
   if (intent === "setStatus") {
     const status = String(formData.get("status") || "");
     const allowed = new Set(["received", "confirmed", "cancelled", "archived"]);
@@ -283,7 +308,9 @@ export default function RequestDetails() {
           <statusFetcher.Form method="post">
             <input type="hidden" name="intent" value="setStatus" />
             <input type="hidden" name="status" value="confirmed" />
-            <button className="lf-pill lf-pill--success" type="submit">Confirm</button>
+            <button className="lf-pill lf-pill--success" type="submit">
+              Confirm
+            </button>
           </statusFetcher.Form>
 
           <statusFetcher.Form method="post">
@@ -297,23 +324,29 @@ export default function RequestDetails() {
           {!isArchived ? (
             <archiveFetcher.Form method="post">
               <input type="hidden" name="intent" value="archive" />
-              <button className="lf-pill" type="submit">Delete</button>
+              <button className="lf-pill" type="submit">
+                Delete
+              </button>
             </archiveFetcher.Form>
           ) : (
             <archiveFetcher.Form method="post">
               <input type="hidden" name="intent" value="restore" />
-              <button className="lf-pill" type="submit">Restore</button>
+              <button className="lf-pill" type="submit">
+                Restore
+              </button>
             </archiveFetcher.Form>
           )}
 
           <Link to="/app/requests">
-            <button type="button" className="lf-pill">← Back</button>
+            <button type="button" className="lf-pill">
+              ← Back
+            </button>
           </Link>
         </div>
       </div>
 
       <div className="lf-detail-grid lf-mt-4">
-        {/* Left: editable fields handled elsewhere in your current UI flow */}
+        {/* Left */}
         <div className="lf-card">
           <div className="lf-card-title">Customer details</div>
 
@@ -337,31 +370,46 @@ export default function RequestDetails() {
                 <div className="lf-field-label">Phone</div>
                 <input className="lf-input" name="phone" defaultValue={r.phone ?? ""} />
               </div>
+
               <div className="lf-field lf-field--full">
                 <div className="lf-field-label">Address</div>
                 <input className="lf-input" name="address" defaultValue={r.address ?? ""} />
               </div>
+
+              {/* Names (not number/id) */}
+              <div className="lf-field">
+                <div className="lf-field-label">Wilaya</div>
+                <div className="lf-field-value">{r.wilayaName ?? "—"}</div>
+              </div>
+              <div className="lf-field">
+                <div className="lf-field-label">Commune</div>
+                <div className="lf-field-value">{r.communeName ?? "—"}</div>
+              </div>
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10, gap: 10 }}>
-              <button className="lf-pill lf-pill--primary" type="submit">Save</button>
-              <span className="lf-muted" style={{ alignSelf: "center" }}>Tip: Ctrl+S</span>
+              <button className="lf-pill lf-pill--primary" type="submit">
+                Save
+              </button>
+              <span className="lf-muted" style={{ alignSelf: "center" }}>
+                Tip: Ctrl+S
+              </span>
             </div>
           </editFetcher.Form>
         </div>
 
-        {/* Right: product (now reliable) */}
+        {/* Right */}
         <div className="lf-card">
           <div className="lf-card-title">Product</div>
 
-          {data.product.adminUrl ? (
+          {data.product.storefrontUrl ? (
             <a
-              href={data.product.adminUrl}
-              target="_top"
+              href={data.product.storefrontUrl}
+              target="_blank"
               rel="noreferrer"
               className="lf-product-card"
               style={{ textDecoration: "none", color: "inherit", display: "block" }}
-              title="Open product in Shopify"
+              title="Open customer product page"
             >
               <div className="lf-product-card">
                 <div className="lf-product-thumb">
@@ -372,7 +420,14 @@ export default function RequestDetails() {
                   )}
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 720, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div
+                    style={{
+                      fontWeight: 720,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
                     {data.product.title ?? "—"}
                   </div>
                   <div className="lf-muted lf-mt-1">Qty: {r.qty ?? r.items[0]?.qty ?? "—"}</div>
@@ -380,21 +435,7 @@ export default function RequestDetails() {
               </div>
             </a>
           ) : (
-            <div className="lf-product-card">
-              <div className="lf-product-thumb">
-                {data.product.imageUrl ? (
-                  <img src={data.product.imageUrl} alt="" />
-                ) : (
-                  <div className="lf-product-thumb--empty" />
-                )}
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 720, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {data.product.title ?? "—"}
-                </div>
-                <div className="lf-muted lf-mt-1">Qty: {r.qty ?? r.items[0]?.qty ?? "—"}</div>
-              </div>
-            </div>
+            <div className="lf-muted">Product link not available.</div>
           )}
 
           {r.attachments.length ? (
