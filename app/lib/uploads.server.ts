@@ -2,12 +2,10 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createHash, randomBytes } from "node:crypto";
 
-const DEFAULT_ALLOWED = new Set([
+const DEFAULT_ALLOWED = [
   "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
+  "image/*", // wildcard supported
+];
 
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024; // 10MB
 
@@ -33,26 +31,62 @@ export function supabaseAdmin(): SupabaseClient {
 
 export type UploadValidation = {
   allowedMimeTypes?: string[]; // if provided, overrides default set
-  maxSizeBytes?: number;       // if provided, overrides default
+  maxSizeBytes?: number; // if provided, overrides default
 };
 
-export function validateUploadFile(file: File, v?: UploadValidation) {
-  const allowed = new Set(
-    (v?.allowedMimeTypes && v.allowedMimeTypes.length ? v.allowedMimeTypes : Array.from(DEFAULT_ALLOWED))
-      .map((s) => s.toLowerCase())
-  );
+function inferMimeFromName(name: string): string {
+  const n = (name || "").toLowerCase();
+  const ext = n.includes(".") ? n.split(".").pop() : "";
+  if (ext === "pdf") return "application/pdf";
+  if (ext === "png") return "image/png";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return "";
+}
 
-  const mime = (file.type || "").toLowerCase();
-  if (!mime || !allowed.has(mime)) {
-    throw new Error(
-      `Invalid file type. Allowed: ${Array.from(allowed).join(", ")}`
-    );
+function isMimeAllowed(mime: string, rule: string) {
+  const m = (mime || "").toLowerCase();
+  const r = (rule || "").toLowerCase().trim();
+  if (!m || !r) return false;
+
+  // wildcard support: image/*
+  if (r.endsWith("/*")) {
+    const prefix = r.slice(0, -1); // "image/"
+    return m.startsWith(prefix);
+  }
+
+  return m === r;
+}
+
+export function validateUploadFile(file: File, v?: UploadValidation) {
+  if (!file || !(file instanceof File)) {
+    throw new Error("Invalid file");
+  }
+
+  if (file.size <= 0) {
+    throw new Error("Empty file");
   }
 
   const max = v?.maxSizeBytes ?? DEFAULT_MAX_BYTES;
   if (file.size > max) {
     throw new Error(`File too large. Max ${(max / (1024 * 1024)).toFixed(0)}MB`);
   }
+
+  const allowed = (v?.allowedMimeTypes && v.allowedMimeTypes.length
+    ? v.allowedMimeTypes
+    : DEFAULT_ALLOWED
+  ).map((s) => String(s).toLowerCase());
+
+  // Some browsers send empty file.type; infer from filename as fallback
+  const mime = (file.type || inferMimeFromName(file.name) || "").toLowerCase();
+
+  const ok = allowed.some((rule) => isMimeAllowed(mime, rule));
+  if (!ok) {
+    throw new Error(`Invalid file type. Allowed: ${allowed.join(", ")}`);
+  }
+
+  return { mimeType: mime || null, sizeBytes: file.size };
 }
 
 function safeFilename(name: string) {
@@ -72,10 +106,13 @@ export async function uploadToSupabase(params: {
 
   const checksum = createHash("sha256").update(bytes).digest("hex");
 
+  // Ensure we always pass a sensible contentType
+  const inferred = (params.file.type || inferMimeFromName(params.file.name) || "").toLowerCase();
+
   const { error } = await supabase.storage
     .from(params.bucket)
     .upload(params.path, bytes, {
-      contentType: params.file.type || undefined,
+      contentType: inferred || undefined,
       upsert: false,
     });
 
@@ -84,7 +121,7 @@ export async function uploadToSupabase(params: {
   return {
     checksum,
     sizeBytes: params.file.size,
-    mimeType: params.file.type || null,
+    mimeType: inferred || null,
   };
 }
 

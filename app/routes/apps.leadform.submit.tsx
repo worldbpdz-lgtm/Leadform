@@ -79,8 +79,9 @@ function stringOrNull(input: unknown): string | null {
 
 function asFiles(val: any): File[] {
   if (!val) return [];
-  if (val instanceof File) return [val];
-  if (Array.isArray(val)) return val.filter((x) => x instanceof File);
+  if (val instanceof File) return val.size > 0 ? [val] : [];
+  if (Array.isArray(val))
+    return val.filter((x) => x instanceof File && x.size > 0);
   return [];
 }
 
@@ -103,7 +104,7 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
 
     const obj: Record<string, any> = {};
     for (const [k, v] of fd.entries()) {
-      // Preserve repeated keys as arrays (required for multi-file uploads)
+      // preserve repeated keys as arrays (multi-file uploads)
       if (obj[k] === undefined) obj[k] = v;
       else if (Array.isArray(obj[k])) obj[k].push(v);
       else obj[k] = [obj[k], v];
@@ -126,15 +127,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
-  const shopDomain: string = verified.shop;
-
   const body = await readBody(request);
   if (!body) return json({ ok: false, error: "Invalid body" }, 400);
 
-  // accept roleType OR role (theme uses role)
   const roleType = asRoleType(body.roleType ?? body.role);
-  if (!roleType)
+  if (!roleType) {
     return json({ ok: false, error: "roleType/role is required" }, 400);
+  }
 
   const idempotencyKey =
     stringOrNull(body.idempotencyKey) ||
@@ -143,13 +142,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Ensure Shop exists
   const shop = await prisma.shop.upsert({
-    where: { shopDomain },
+    where: { shopDomain: verified.shop },
     update: { uninstalledAt: null },
-    create: { shopDomain, installedAt: new Date() },
+    create: { shopDomain: verified.shop, installedAt: new Date() },
     select: { id: true },
   });
 
-  // Resolve active form (ShopSettings.currentFormId preferred)
+  // Resolve active form
   const settings = await prisma.shopSettings.findUnique({
     where: { shopId: shop.id },
     select: { currentFormId: true },
@@ -181,7 +180,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const address = stringOrNull(body.address);
 
   const wilayaCode = parseIntOrNull(body.wilayaCode);
-  const communeId = stringOrNull(body.communeId); // optional: "" -> null
+  const communeId = stringOrNull(body.communeId);
 
   const pageUrl = stringOrNull(body.pageUrl);
   const referrer =
@@ -215,10 +214,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Documents (up to 10 PDFs/images; mix allowed)
-  // Accept: "document" and/or "documents" and/or repeated keys
-  const files = [...asFiles(body.document), ...asFiles(body.documents)].filter(
-    (f) => f && f.size > 0
-  );
+  // Accept: "document" OR "documents" OR repeated keys (documents[])
+  const files = [
+    ...asFiles(body.document),
+    ...asFiles(body.documents),
+    ...asFiles(body["documents[]"]),
+    ...asFiles(body.files),
+    ...asFiles(body["files[]"]),
+  ];
 
   const needsDoc =
     roleType === RoleType.installer || roleType === RoleType.company;
@@ -231,7 +234,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
   }
 
-  // Load role requirement (optional but preferred)
+  // Load role requirement (optional)
   const requirement =
     needsDoc && role?.id
       ? await prisma.roleRequirement.findFirst({
@@ -246,14 +249,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         })
       : null;
 
-  // Validate each file against role constraints (or defaults)
+  // Always allow PDF + images even if DB is misconfigured
+  const defaultAllowed = ["application/pdf", "image/*"];
+  const allowedMimeTypes = Array.from(
+    new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
+  );
+
   for (const f of files) {
     try {
       validateUploadFile(f, {
-        allowedMimeTypes:
-          requirement?.acceptedMimeTypes?.length
-            ? requirement.acceptedMimeTypes
-            : undefined,
+        allowedMimeTypes,
         maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
       });
     } catch (e: any) {
@@ -261,20 +266,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // Idempotency
+  // Idempotency (only if client provides it; dedupe BEFORE creating uploads)
   if (idempotencyKey) {
     const existing = await prisma.request.findFirst({
       where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
       select: { id: true },
     });
     if (existing) {
-      return json({ ok: true, requestId: existing.id, deduped: true });
+      return json({ ok: true, requestId: existing.id, deduped: true }, 200);
     }
   }
 
   const primary = items[0];
   const values = body.values && typeof body.values === "object" ? body.values : {};
 
+  // Create request first, then attach uploads. If upload fails and docs required -> rollback.
   const created = await prisma.request.create({
     data: {
       shopId: shop.id,
@@ -310,9 +316,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Upload and create attachment rows
   if (files.length) {
-    const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
+    const bucket =
+      process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
 
     try {
       for (const f of files) {
@@ -330,7 +336,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             provider: "supabase",
             bucket,
             path,
-            url: null, // we use signed URLs on admin side
+            url: null, // signed URLs in admin
             mimeType: up.mimeType,
             sizeBytes: up.sizeBytes,
             checksum: up.checksum,
@@ -343,19 +349,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: {
             requestId: created.id,
             uploadId: uploadRow.id,
-            requirementKey: requirement?.key ?? "document",
-            // show original filename in admin
+            requirementKey: requirement?.key ?? "documents",
             label: f.name || requirement?.label || "Document",
           },
           select: { id: true },
         });
       }
     } catch (e: any) {
-      // If installer/company requires docs, enforce by removing the request if upload fails
+      // enforce requirement by deleting request if upload failed
       await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
       return json({ ok: false, error: e?.message || "Upload failed" }, 500);
     }
   }
 
-  return json({ ok: true, requestId: created.id, uploadReceived: files.length });
+  return json({
+    ok: true,
+    requestId: created.id,
+    uploadReceived: files.length,
+  });
 };
