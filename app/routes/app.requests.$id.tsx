@@ -8,6 +8,7 @@ import { Form, Link, useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
+import { createSignedUrl } from "~/lib/uploads.server";
 
 type LoaderData = {
   request: {
@@ -129,6 +130,29 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         })
       : Promise.resolve(null),
   ]);
+  const attachmentsWithSigned = await Promise.all(
+  req.attachments.map(async (a) => {
+    const signedUrl = await createSignedUrl({
+      bucket: a.upload.bucket,
+      path: a.upload.path,
+      expiresInSeconds: 60 * 60,
+    });
+
+    return {
+      id: a.id,
+      label: a.label,
+      requirementKey: a.requirementKey,
+      upload: {
+        url: signedUrl, // signed (viewable) URL
+        bucket: a.upload.bucket,
+        path: a.upload.path,
+        mimeType: a.upload.mimeType,
+        sizeBytes: a.upload.sizeBytes,
+      },
+    };
+  })
+);
+
 
   const wilayaName = wilayaRow?.nameFr ?? wilayaRow?.nameAr ?? null;
   const communeName = communeRow?.nameFr ?? communeRow?.nameAr ?? null;
@@ -204,7 +228,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       qty: req.qty,
 
       items: req.items,
-      attachments: req.attachments,
+      attachments: attachmentsWithSigned,
     },
     product: { title: productTitle, imageUrl: productImageUrl, storefrontUrl },
   };

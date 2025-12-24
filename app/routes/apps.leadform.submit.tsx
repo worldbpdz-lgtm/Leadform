@@ -4,6 +4,8 @@ import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parse as parseQuery } from "node:querystring";
+import { createSignedUrl, makeRequestUploadPath, uploadToSupabase, validateUploadFile } from "~/lib/uploads.server";
+
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -195,11 +197,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Document requirement (for installer/company)
-  const file = body.document instanceof File ? body.document : null;
-  const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
-  if (needsDoc && !file) {
-    return json({ ok: false, error: "Document is required for this role" }, 400);
+const file = body.document instanceof File ? body.document : null;
+const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
+if (needsDoc && !file) {
+  return json({ ok: false, error: "Document is required for this role" }, 400);
+}
+
+// Load role requirement (optional but preferred)
+const requirement =
+  needsDoc && role?.id
+    ? await prisma.roleRequirement.findFirst({
+        where: { roleId: role.id, required: true },
+        orderBy: { createdAt: "asc" },
+        select: { key: true, label: true, acceptedMimeTypes: true, maxSizeBytes: true },
+      })
+    : null;
+
+if (file) {
+  try {
+    validateUploadFile(file, {
+      allowedMimeTypes: requirement?.acceptedMimeTypes?.length ? requirement.acceptedMimeTypes : undefined,
+      maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
+    });
+  } catch (e: any) {
+    return json({ ok: false, error: e?.message || "Invalid file" }, 400);
   }
+}
+
 
   // Idempotency
   if (idempotencyKey) {
@@ -215,39 +239,83 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const values = body.values && typeof body.values === "object" ? body.values : {};
 
   const created = await prisma.request.create({
-    data: {
-      shopId: shop.id,
-      status: "received",
-      idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
+  data: {
+    shopId: shop.id,
+    status: "received",
+    idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
 
-      roleType,
-      roleId: role?.id ?? null,
-      formId: form?.id ?? null,
+    roleType,
+    roleId: role?.id ?? null,
+    formId: form?.id ?? null,
 
-      firstName,
-      lastName,
-      email,
-      phone,
-      address,
+    firstName,
+    lastName,
+    email,
+    phone,
+    address,
 
-      wilayaCode,
-      communeId,
+    wilayaCode,
+    communeId,
 
-      pageUrl,
-      referrer,
-      ip,
-      userAgent,
+    pageUrl,
+    referrer,
+    ip,
+    userAgent,
 
-      productId: primary.productId,
-      variantId: primary.variantId,
-      qty: primary.qty,
+    productId: primary.productId,
+    variantId: primary.variantId,
+    qty: primary.qty,
 
-      values,
+    values,
 
-      items: { create: items },
-    },
-    select: { id: true },
+    items: { create: items },
+  },
+  select: { id: true },
+});
+
+// If a file exists, upload it and link it to the request
+if (file) {
+  const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads"; // keep your current env name
+  const path = makeRequestUploadPath({
+    shopId: shop.id,
+    requestId: created.id,
+    originalName: file.name || "document",
   });
 
-  return json({ ok: true, requestId: created.id, uploadReceived: Boolean(file) });
+  try {
+    const up = await uploadToSupabase({ bucket, path, file });
+
+    const uploadRow = await prisma.upload.create({
+      data: {
+        shopId: shop.id,
+        provider: "supabase",
+        bucket,
+        path,
+        url: null, // we will use signed URLs in admin
+        mimeType: up.mimeType,
+        sizeBytes: up.sizeBytes,
+        checksum: up.checksum,
+        purpose: "role_document",
+      },
+      select: { id: true },
+    });
+
+    await prisma.requestAttachment.create({
+      data: {
+        requestId: created.id,
+        uploadId: uploadRow.id,
+        requirementKey: requirement?.key ?? "document",
+        label: requirement?.label ?? "Document",
+      },
+      select: { id: true },
+    });
+  } catch (e: any) {
+    // enforce "required doc" by removing the request if upload failed
+    await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
+    return json({ ok: false, error: e?.message || "Upload failed" }, 500);
+  }
+}
+
+return json({ ok: true, requestId: created.id, uploadReceived: Boolean(file) });
+
 };
