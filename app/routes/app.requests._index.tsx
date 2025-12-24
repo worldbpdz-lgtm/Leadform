@@ -1,12 +1,6 @@
+// app/routes/app.requests._index.tsx
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import {
-  Form,
-  Link,
-  useLoaderData,
-  useSearchParams,
-  useSubmit,
-  useNavigation,
-} from "react-router";
+import { Form, Link, useLoaderData, useSearchParams, useSubmit, useNavigation } from "react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
@@ -14,20 +8,20 @@ import { prisma } from "~/db.server";
 
 type LoaderData = {
   q: string;
-  status: string;
+  status: "all" | "received" | "confirmed" | "cancelled";
   range: string;
   page: number;
   pageSize: number;
   total: number;
   rows: Array<{
     id: string;
-    status: string;
+    status: "received" | "confirmed" | "cancelled";
     roleType: string;
     firstName: string | null;
     lastName: string | null;
     email: string | null;
     phone: string | null;
-    wilayaCode: number | null;
+    wilaya: { code: number; nameFr: string; nameAr: string } | null;
     itemsCount: number;
     createdAt: string;
   }>;
@@ -65,12 +59,28 @@ function computeDateRange(range: string) {
   return { start: null as Date | null, end: null as Date | null };
 }
 
+function statusLabel(s: string) {
+  if (s === "received") return "New";
+  if (s === "confirmed") return "Confirmed";
+  if (s === "cancelled") return "Cancelled";
+  return s;
+}
+
+function statusBadgeClass(s: string) {
+  if (s === "confirmed") return "lf-badge lf-badge--approved";
+  if (s === "cancelled") return "lf-badge lf-badge--rejected";
+  return "lf-badge lf-badge--pending";
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") || "").trim();
-  const status = (url.searchParams.get("status") || "all").trim();
+  const rawStatus = (url.searchParams.get("status") || "all").trim();
+  const status: LoaderData["status"] =
+    rawStatus === "received" || rawStatus === "confirmed" || rawStatus === "cancelled" ? rawStatus : "all";
+
   const range = (url.searchParams.get("range") || "30d").trim();
   const page = parseIntSafe(url.searchParams.get("page"), 1);
 
@@ -89,8 +99,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const { start, end } = computeDateRange(range);
 
+  // IMPORTANT: never show basket items in Requests list
   const where: any = {
     shopId: shopRow.id,
+    status: { not: "archived" },
     ...(status !== "all" ? { status } : {}),
     ...(start && end ? { createdAt: { gte: start, lt: end } } : {}),
     ...(q
@@ -121,8 +133,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         lastName: true,
         email: true,
         phone: true,
-        wilayaCode: true,
         createdAt: true,
+        wilaya: { select: { code: true, nameFr: true, nameAr: true } },
         _count: { select: { items: true } },
       },
     }),
@@ -137,13 +149,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     total,
     rows: items.map((r) => ({
       id: r.id,
-      status: r.status,
-      roleType: r.roleType,
+      status: (r.status as any) as LoaderData["rows"][number]["status"],
+      roleType: String(r.roleType),
       firstName: r.firstName,
       lastName: r.lastName,
       email: r.email,
       phone: r.phone,
-      wilayaCode: r.wilayaCode,
+      wilaya: r.wilaya ? { ...r.wilaya } : null,
       itemsCount: r._count.items,
       createdAt: r.createdAt.toISOString(),
     })),
@@ -163,37 +175,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   if (!shopRow) return { ok: false };
 
-  if (intent === "bulkArchive") {
+  if (intent === "bulkToBasket") {
     const ids = formData.getAll("selected").map(String).filter(Boolean);
-    if (!ids.length) return { ok: true, archived: 0 };
+    if (!ids.length) return { ok: true, moved: 0 };
 
     const res = await prisma.request.updateMany({
       where: { shopId: shopRow.id, id: { in: ids } },
-      data: { status: "archived" },
+      data: { status: "archived" as any },
     });
-    return { ok: true, archived: res.count };
+    return { ok: true, moved: res.count };
   }
 
   return { ok: false };
 };
-
-function statusBadgeClass(s: string) {
-  if (s === "confirmed") return "lf-badge lf-badge--approved";
-  if (s === "cancelled" || s === "spam") return "lf-badge lf-badge--rejected";
-  if (s === "received" || s === "in_review" || s === "contacted") return "lf-badge lf-badge--pending";
-  return "lf-badge";
-}
-
-function statusLabel(s: string) {
-  if (s === "received") return "Received";
-  if (s === "in_review") return "In review";
-  if (s === "contacted") return "Contacted";
-  if (s === "confirmed") return "Confirmed";
-  if (s === "cancelled") return "Cancelled";
-  if (s === "spam") return "Spam";
-  if (s === "archived") return "Archived";
-  return s;
-}
 
 export default function RequestsIndex() {
   const data = useLoaderData() as LoaderData;
@@ -201,7 +195,6 @@ export default function RequestsIndex() {
   const submit = useSubmit();
   const nav = useNavigation();
 
-  // Selection state (controls showing bulk actions)
   const [selected, setSelected] = useState<string[]>([]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
 
@@ -211,7 +204,6 @@ export default function RequestsIndex() {
   const formRef = useRef<HTMLFormElement | null>(null);
   const debounceRef = useRef<number | null>(null);
 
-  // Auto-apply: status/range change submits immediately
   const onFilterChange = () => {
     if (!formRef.current) return;
     const fd = new FormData(formRef.current);
@@ -219,7 +211,6 @@ export default function RequestsIndex() {
     submit(fd, { method: "get" });
   };
 
-  // Auto-apply: search is debounced
   const onSearchInput = () => {
     if (!formRef.current) return;
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
@@ -227,7 +218,7 @@ export default function RequestsIndex() {
       const fd = new FormData(formRef.current!);
       fd.set("page", "1");
       submit(fd, { method: "get" });
-    }, 280);
+    }, 260);
   };
 
   const pageLink = (p: number) => {
@@ -247,7 +238,7 @@ export default function RequestsIndex() {
 
   const toggleAllVisible = () => {
     const visibleIds = data.rows.map((r) => r.id);
-    const allSelected = visibleIds.every((id) => selectedSet.has(id));
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id));
     if (allSelected) {
       setSelected((prev) => prev.filter((id) => !visibleIds.includes(id)));
     } else {
@@ -256,22 +247,23 @@ export default function RequestsIndex() {
   };
 
   useEffect(() => {
-    // Clear selection when filters/page change
     setSelected([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.q, data.status, data.range, data.page]);
 
   return (
     <div className="lf-card lf-enter">
-      <div className="lf-card-heading" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div
+        className="lf-card-heading"
+        style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+      >
         <div>
-          <div style={{ fontWeight: 720 }}>All requests</div>
+          <div style={{ fontWeight: 800 }}>All requests</div>
           <div className="lf-muted">Showing {data.rows.length} of {data.total} request(s).</div>
         </div>
         <div className="lf-muted">{isLoading ? "Updating…" : `Page ${data.page} / ${totalPages}`}</div>
       </div>
 
-      {/* Premium filter bar (auto-applies, no Apply button) */}
       <Form method="get" ref={formRef} className="lf-toolbar" style={{ marginTop: 12 }}>
         <input type="hidden" name="page" value={String(data.page)} />
 
@@ -289,13 +281,9 @@ export default function RequestsIndex() {
         <div className="lf-selects">
           <select className="lf-input lf-input--select" name="status" defaultValue={data.status} onChange={onFilterChange}>
             <option value="all">All statuses</option>
-            <option value="received">Received</option>
-            <option value="in_review">In review</option>
-            <option value="contacted">Contacted</option>
+            <option value="received">New</option>
             <option value="confirmed">Confirmed</option>
             <option value="cancelled">Cancelled</option>
-            <option value="spam">Spam</option>
-            <option value="archived">Archived</option>
           </select>
 
           <select className="lf-input lf-input--select" name="range" defaultValue={data.range} onChange={onFilterChange}>
@@ -307,17 +295,20 @@ export default function RequestsIndex() {
         </div>
       </Form>
 
-      {/* Bulk action bar appears only when selection exists */}
       {selected.length > 0 ? (
         <Form method="post" className="lf-bulkbar" style={{ marginTop: 12 }}>
-          <input type="hidden" name="intent" value="bulkArchive" />
+          <input type="hidden" name="intent" value="bulkToBasket" />
           {selected.map((id) => (
             <input key={id} type="hidden" name="selected" value={id} />
           ))}
           <div className="lf-muted">{selected.length} selected</div>
           <div className="lf-btn-row">
-            <button className="lf-pill lf-pill--primary" type="submit">Archive selected</button>
-            <button className="lf-pill" type="button" onClick={() => setSelected([])}>Clear</button>
+            <button className="lf-pill lf-pill--danger" type="submit">
+              Delete
+            </button>
+            <button className="lf-pill" type="button" onClick={() => setSelected([])}>
+              Clear
+            </button>
           </div>
         </Form>
       ) : null}
@@ -327,7 +318,11 @@ export default function RequestsIndex() {
           <thead>
             <tr>
               <th style={{ width: 44 }}>
-                <input type="checkbox" onChange={toggleAllVisible} checked={data.rows.length > 0 && data.rows.every((r) => selectedSet.has(r.id))} />
+                <input
+                  type="checkbox"
+                  onChange={toggleAllVisible}
+                  checked={data.rows.length > 0 && data.rows.every((r) => selectedSet.has(r.id))}
+                />
               </th>
               <th>ID</th>
               <th>Status</th>
@@ -354,12 +349,12 @@ export default function RequestsIndex() {
                 </td>
                 <td>{r.roleType}</td>
                 <td>{customerLabel(r)}</td>
-                <td>{r.wilayaCode ?? "—"}</td>
+                <td>{r.wilaya ? `${r.wilaya.code} — ${r.wilaya.nameFr}` : "—"}</td>
                 <td>{r.itemsCount}</td>
                 <td>{new Date(r.createdAt).toLocaleString()}</td>
                 <td style={{ textAlign: "right" }}>
-                  <Link to={`/app/requests/${r.id}`}>
-                    <button type="button" className="lf-pill lf-pill--primary">Open</button>
+                  <Link to={`/app/requests/${r.id}`} className="lf-pill lf-pill--primary" style={{ textDecoration: "none" }}>
+                    Open
                   </Link>
                 </td>
               </tr>
@@ -375,16 +370,15 @@ export default function RequestsIndex() {
         </table>
       </div>
 
-      {/* Pagination */}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 12 }}>
-        <Link to={pageLink(Math.max(1, data.page - 1))}>
-          <button type="button" className="lf-pill" disabled={data.page <= 1}>Prev</button>
+        <Link to={pageLink(Math.max(1, data.page - 1))} className="lf-pill" style={{ textDecoration: "none" }}>
+          <span aria-hidden="true">←</span>&nbsp;Prev
         </Link>
         <div className="lf-muted" style={{ alignSelf: "center" }}>
           Page {data.page} / {totalPages}
         </div>
-        <Link to={pageLink(Math.min(totalPages, data.page + 1))}>
-          <button type="button" className="lf-pill" disabled={data.page >= totalPages}>Next</button>
+        <Link to={pageLink(Math.min(totalPages, data.page + 1))} className="lf-pill" style={{ textDecoration: "none" }}>
+          Next&nbsp;<span aria-hidden="true">→</span>
         </Link>
       </div>
     </div>
