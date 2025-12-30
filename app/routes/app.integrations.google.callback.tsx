@@ -96,7 +96,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  await prisma.sheetsConnection.upsert({
+    await prisma.sheetsConnection.upsert({
     where: { shopId_spreadsheetId: { shopId: shopRow.id, spreadsheetId: "primary" } },
     update: { active: true },
     create: {
@@ -105,6 +105,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       active: true,
     },
   });
+
 
   return redirect(`${returnTo}?google=connected`);
 };
