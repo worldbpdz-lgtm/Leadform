@@ -1,6 +1,6 @@
 // app/routes/app.integrations._index.tsx
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, Link, useActionData, useLoaderData, useLocation } from "react-router";
+import { Form, useActionData, useLoaderData, useLocation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
@@ -151,12 +151,25 @@ export default function IntegrationsIndex() {
   const actionData = useActionData() as any;
   const loc = useLocation();
 
+  const qs = new URLSearchParams(loc.search);
+  const shop = qs.get("shop") || "";
+  const host = qs.get("host") || "";
+  const embedded = qs.get("embedded") || "1";
+
   const expiryLabel = data.google.tokenExpiresAt ? new Date(data.google.tokenExpiresAt).toLocaleString() : "—";
   const connected = data.google.connected;
 
-  // Preserve current query params (host, shop, etc.) so we can return cleanly
   const returnTo = `${loc.pathname}${loc.search || ""}`;
-  const startHref = `/app/integrations/google/start?returnTo=${encodeURIComponent(returnTo)}`;
+
+  // IMPORTANT: include shop + host so authenticate.admin() can work top-level
+  const startHref =
+    `/app/integrations/google/start` +
+    `?shop=${encodeURIComponent(shop)}` +
+    `&host=${encodeURIComponent(host)}` +
+    `&embedded=${encodeURIComponent(embedded)}` +
+    `&returnTo=${encodeURIComponent(returnTo)}`;
+
+  const missingShopParams = !shop || !host;
 
   return (
     <div className="lf-enter" style={{ display: "grid", gap: 14 }}>
@@ -255,16 +268,21 @@ export default function IntegrationsIndex() {
 
         {!connected ? (
           <div className="lf-toolbar" style={{ marginTop: 12 }}>
-            {/* IMPORTANT: top-level navigation to escape Shopify iframe */}
-            <a
-              href={startHref}
-              target="_top"
-              rel="noreferrer"
-              className="lf-pill lf-pill--primary"
-              style={{ textDecoration: "none" }}
-            >
-              Connect Google
-            </a>
+            {missingShopParams ? (
+              <div className="lf-muted">
+                Open this page from inside Shopify Admin (embedded). Missing <code>shop</code>/<code>host</code> in URL.
+              </div>
+            ) : (
+              <a
+                href={startHref}
+                target="_top"
+                rel="noreferrer"
+                className="lf-pill lf-pill--primary"
+                style={{ textDecoration: "none" }}
+              >
+                Connect Google
+              </a>
+            )}
           </div>
         ) : (
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
