@@ -62,7 +62,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ]);
 
   const spreadsheetId = conn?.spreadsheetId ?? null;
-  const spreadsheetUrl = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}` : null;
+  const spreadsheetUrl = spreadsheetId
+    ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}`
+    : null;
 
   const data: LoaderData = {
     google: {
@@ -124,7 +126,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Google / Sheets
   // ─────────────────────────────────────────
   if (intent === "disconnectGoogle") {
-    await prisma.sheetsConnection.updateMany({ where: { shopId: shop.id }, data: { active: false } });
+    await prisma.sheetsConnection.updateMany({
+      where: { shopId: shop.id },
+      data: { active: false },
+    });
     await prisma.oAuthGoogle.deleteMany({ where: { shopId: shop.id } });
     return { ok: true };
   }
@@ -156,12 +161,14 @@ export default function IntegrationsIndex() {
   const host = qs.get("host") || "";
   const embedded = qs.get("embedded") || "1";
 
-  const expiryLabel = data.google.tokenExpiresAt ? new Date(data.google.tokenExpiresAt).toLocaleString() : "—";
   const connected = data.google.connected;
+  const expiryLabel = data.google.tokenExpiresAt
+    ? new Date(data.google.tokenExpiresAt).toLocaleString()
+    : "—";
 
-  const returnTo = `${loc.pathname}${loc.search || ""}`;
+  // CRITICAL: keep returnTo SHORT, do not include current loc.search (it contains id_token/session/etc)
+  const returnTo = "/app/integrations";
 
-  // IMPORTANT: include shop + host so authenticate.admin() can work top-level
   const startHref =
     `/app/integrations/google/start` +
     `?shop=${encodeURIComponent(shop)}` +
@@ -173,7 +180,7 @@ export default function IntegrationsIndex() {
 
   return (
     <div className="lf-enter" style={{ display: "grid", gap: 14 }}>
-      {/* TABLE 1: Notifications Emails */}
+      {/* TABLE 1: Notification emails */}
       <div className="lf-card">
         <div
           className="lf-card-heading"
@@ -193,13 +200,19 @@ export default function IntegrationsIndex() {
         <Form method="post" className="lf-toolbar" style={{ marginTop: 12, gap: 10 }}>
           <input type="hidden" name="intent" value="addRecipient" />
           <input className="lf-input" name="email" placeholder="Add recipient email…" />
-          <button className="lf-pill lf-pill--primary" type="submit">Add</button>
+          <button className="lf-pill lf-pill--primary" type="submit">
+            Add
+          </button>
 
           {actionData?.error === "limit_reached" ? (
-            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Limit reached (10).</span>
+            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+              Limit reached (10).
+            </span>
           ) : null}
           {actionData?.error === "invalid_email" ? (
-            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Invalid email.</span>
+            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+              Invalid email.
+            </span>
           ) : null}
         </Form>
 
@@ -232,7 +245,9 @@ export default function IntegrationsIndex() {
                     <Form method="post">
                       <input type="hidden" name="intent" value="deleteRecipient" />
                       <input type="hidden" name="id" value={r.id} />
-                      <button className="lf-pill lf-pill--danger" type="submit">Remove</button>
+                      <button className="lf-pill lf-pill--danger" type="submit">
+                        Remove
+                      </button>
                     </Form>
                   </td>
                 </tr>
@@ -288,12 +303,16 @@ export default function IntegrationsIndex() {
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
             <Form method="post">
               <input type="hidden" name="intent" value="disconnectGoogle" />
-              <button className="lf-pill" type="submit">Disconnect</button>
+              <button className="lf-pill" type="submit">
+                Disconnect
+              </button>
             </Form>
 
             <Form method="post">
               <input type="hidden" name="intent" value="createSheet" />
-              <button className="lf-pill lf-pill--primary" type="submit">Create sheet</button>
+              <button className="lf-pill lf-pill--primary" type="submit">
+                Create sheet
+              </button>
             </Form>
 
             <Form method="post" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -304,9 +323,13 @@ export default function IntegrationsIndex() {
                 placeholder="Paste Spreadsheet URL or ID…"
                 style={{ minWidth: 320 }}
               />
-              <button className="lf-pill" type="submit">Link</button>
+              <button className="lf-pill" type="submit">
+                Link
+              </button>
               {actionData?.error === "invalid_sheet_id" ? (
-                <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Invalid Spreadsheet URL/ID.</span>
+                <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+                  Invalid Spreadsheet URL/ID.
+                </span>
               ) : null}
             </Form>
           </div>
