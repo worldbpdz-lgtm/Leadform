@@ -1,13 +1,15 @@
 // app/routes/app.integrations._index.tsx
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, Link, useLoaderData, useActionData, useFetcher } from "react-router";
-import { useEffect } from "react";
+import { Form, Link, useActionData, useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
-import { useAppBridge } from "@shopify/app-bridge-react";
-import { Redirect } from "@shopify/app-bridge/actions";
-import { createLeadformSpreadsheet, linkExistingSpreadsheet, parseSpreadsheetId } from "~/lib/sheets.server";
+import {
+  createLeadformSpreadsheet,
+  linkExistingSpreadsheet,
+  parseSpreadsheetId,
+} from "~/lib/sheets.server";
+import { GOOGLE_SCOPES, getGoogleOAuthClient, makeState } from "~/lib/google.server";
 
 type LoaderData = {
   google: {
@@ -21,6 +23,10 @@ type LoaderData = {
   recipients: Array<{ id: string; email: string; active: boolean; createdAt: string }>;
   limits: { recipientsMax: number };
 };
+
+type ActionData =
+  | { ok: true; intent: string; authUrl?: string; spreadsheetUrl?: string }
+  | { ok: false; intent: string; error: string };
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -51,7 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
     prisma.sheetsConnection.findFirst({
       where: { shopId: shop.id, active: true },
-      select: { spreadsheetId: true, spreadsheetName: true, defaultSheetName: true },
+      select: { spreadsheetId: true },
     }),
     prisma.notificationRecipient.findMany({
       where: { shopId: shop.id },
@@ -61,7 +67,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ]);
 
   const spreadsheetId = conn?.spreadsheetId ?? null;
-  const spreadsheetUrl = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}` : null;
+  const spreadsheetUrl = spreadsheetId
+    ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}`
+    : null;
 
   const data: LoaderData = {
     google: {
@@ -69,10 +77,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       tokenExpiresAt: oauth?.expiresAt ? oauth.expiresAt.toISOString() : null,
     },
     sheet: { spreadsheetId, spreadsheetUrl },
-    recipients: recipients.map((r) => ({
-      ...r,
-      createdAt: r.createdAt.toISOString(),
-    })),
+    recipients: recipients.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })),
     limits: { recipientsMax: 10 },
   };
 
@@ -88,17 +93,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { shopDomain: session.shop },
     select: { id: true },
   });
-  if (!shop) return { ok: false, error: "shop_not_found" };
+  if (!shop) return { ok: false, intent, error: "shop_not_found" } satisfies ActionData;
 
   // ─────────────────────────────────────────
   // Notifications recipients (max 10)
   // ─────────────────────────────────────────
   if (intent === "addRecipient") {
     const email = String(fd.get("email") || "").trim().toLowerCase();
-    if (!isValidEmail(email)) return { ok: false, error: "invalid_email" };
+    if (!isValidEmail(email)) return { ok: false, intent, error: "invalid_email" } satisfies ActionData;
 
     const count = await prisma.notificationRecipient.count({ where: { shopId: shop.id } });
-    if (count >= 10) return { ok: false, error: "limit_reached" };
+    if (count >= 10) return { ok: false, intent, error: "limit_reached" } satisfies ActionData;
 
     await prisma.notificationRecipient.upsert({
       where: { shopId_email: { shopId: shop.id, email } },
@@ -106,72 +111,93 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       create: { shopId: shop.id, email, active: true },
     });
 
-    return { ok: true };
+    return { ok: true, intent } satisfies ActionData;
   }
 
   if (intent === "toggleRecipient") {
     const id = String(fd.get("id") || "");
     const active = String(fd.get("active") || "") === "true";
-    await prisma.notificationRecipient.update({
-      where: { id },
-      data: { active },
-    });
-    return { ok: true };
+    await prisma.notificationRecipient.update({ where: { id }, data: { active } });
+    return { ok: true, intent } satisfies ActionData;
   }
 
   if (intent === "deleteRecipient") {
     const id = String(fd.get("id") || "");
     await prisma.notificationRecipient.delete({ where: { id } });
-    return { ok: true };
+    return { ok: true, intent } satisfies ActionData;
   }
 
   // ─────────────────────────────────────────
-  // Google / Sheets
+  // Google OAuth (IMPORTANT: start OAuth via TOP redirect)
   // ─────────────────────────────────────────
+  if (intent === "connectGoogle") {
+    const client = getGoogleOAuthClient();
+
+    const returnTo = String(fd.get("returnTo") || "/app/integrations");
+    const state = makeState(session.shop);
+
+    const authUrl = client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: [...GOOGLE_SCOPES],
+      state: JSON.stringify({ state, returnTo }),
+      include_granted_scopes: true,
+    });
+
+    // Client will do: window.top.location.href = authUrl
+    return { ok: true, intent, authUrl } satisfies ActionData;
+  }
+
   if (intent === "disconnectGoogle") {
     await prisma.sheetsConnection.updateMany({
       where: { shopId: shop.id },
       data: { active: false },
     });
     await prisma.oAuthGoogle.deleteMany({ where: { shopId: shop.id } });
-    return { ok: true };
+    return { ok: true, intent } satisfies ActionData;
   }
 
   if (intent === "createSheet") {
     const res = await createLeadformSpreadsheet(session.shop);
-    return { ok: true, created: true, spreadsheetUrl: res.spreadsheetUrl };
+    return { ok: true, intent, spreadsheetUrl: res.spreadsheetUrl } satisfies ActionData;
   }
 
   if (intent === "linkSheet") {
     const input = String(fd.get("spreadsheet") || "");
     const spreadsheetId = parseSpreadsheetId(input);
-    if (!spreadsheetId) return { ok: false, error: "invalid_sheet_id" };
+    if (!spreadsheetId) return { ok: false, intent, error: "invalid_sheet_id" } satisfies ActionData;
 
     const res = await linkExistingSpreadsheet(session.shop, spreadsheetId);
-    return { ok: true, linked: true, spreadsheetUrl: res.spreadsheetUrl };
+    return { ok: true, intent, spreadsheetUrl: res.spreadsheetUrl } satisfies ActionData;
   }
 
-  return { ok: false, error: "unknown_intent" };
+  return { ok: false, intent, error: "unknown_intent" } satisfies ActionData;
 };
 
 export default function IntegrationsIndex() {
   const data = useLoaderData() as LoaderData;
-  const actionData = useActionData() as any;
+  const actionData = useActionData() as ActionData | undefined;
 
-  // App Bridge remote redirect for Google OAuth (avoids iframe/CSP issues)
-  const shopify = useAppBridge();
-  const googleAuthFetcher = useFetcher<{ ok: boolean; authUrl?: string; error?: string }>();
+  // Use fetcher for connect so the page doesn’t navigate inside the iframe
+  const connectFetcher = useFetcher<ActionData>();
 
-  useEffect(() => {
-    const authUrl = googleAuthFetcher.data?.authUrl;
-    if (!authUrl) return;
-
-    const redirect = Redirect.create(shopify);
-    redirect.dispatch(Redirect.Action.REMOTE, authUrl);
-  }, [googleAuthFetcher.data?.authUrl, shopify]);
-
-  const expiryLabel = data.google.tokenExpiresAt ? new Date(data.google.tokenExpiresAt).toLocaleString() : "—";
   const connected = data.google.connected;
+  const expiryLabel = data.google.tokenExpiresAt
+    ? new Date(data.google.tokenExpiresAt).toLocaleString()
+    : "—";
+
+  // When server returns authUrl, force TOP navigation (avoids Google being embedded in iframe -> 403)
+  const authUrl = connectFetcher.data && connectFetcher.data.ok ? connectFetcher.data.authUrl : undefined;
+  if (authUrl) {
+    // eslint-disable-next-line no-restricted-globals
+    (window.top ?? window).location.href = authUrl;
+  }
+
+  const recipientError =
+    actionData && !actionData.ok && actionData.intent === "addRecipient" ? actionData.error : null;
+
+  const sheetError =
+    actionData && !actionData.ok && actionData.intent === "linkSheet" ? actionData.error : null;
 
   return (
     <div className="lf-enter" style={{ display: "grid", gap: 14 }}>
@@ -184,8 +210,8 @@ export default function IntegrationsIndex() {
           <div>
             <div style={{ fontWeight: 800 }}>Notification emails</div>
             <div className="lf-muted">
-              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct link
-              to the sheet.
+              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct
+              link to the sheet.
             </div>
           </div>
           <div className="lf-muted">
@@ -200,12 +226,12 @@ export default function IntegrationsIndex() {
             Add
           </button>
 
-          {actionData?.error === "limit_reached" ? (
+          {recipientError === "limit_reached" ? (
             <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
               Limit reached (10).
             </span>
           ) : null}
-          {actionData?.error === "invalid_email" ? (
+          {recipientError === "invalid_email" ? (
             <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
               Invalid email.
             </span>
@@ -280,23 +306,13 @@ export default function IntegrationsIndex() {
 
         {!connected ? (
           <div className="lf-toolbar" style={{ marginTop: 12 }}>
-            <button
-              type="button"
-              className="lf-pill lf-pill--primary"
-              onClick={() => {
-                const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
-                googleAuthFetcher.load(`/app/integrations/google/auth-url?returnTo=${returnTo}`);
-              }}
-              disabled={googleAuthFetcher.state !== "idle"}
-            >
-              {googleAuthFetcher.state !== "idle" ? "Connecting…" : "Connect Google"}
-            </button>
-
-            {googleAuthFetcher.data?.error ? (
-              <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
-                {googleAuthFetcher.data.error}
-              </span>
-            ) : null}
+            <connectFetcher.Form method="post">
+              <input type="hidden" name="intent" value="connectGoogle" />
+              <input type="hidden" name="returnTo" value="/app/integrations" />
+              <button className="lf-pill lf-pill--primary" type="submit">
+                Connect Google
+              </button>
+            </connectFetcher.Form>
           </div>
         ) : (
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
@@ -325,7 +341,7 @@ export default function IntegrationsIndex() {
               <button className="lf-pill" type="submit">
                 Link
               </button>
-              {actionData?.error === "invalid_sheet_id" ? (
+              {sheetError === "invalid_sheet_id" ? (
                 <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
                   Invalid Spreadsheet URL/ID.
                 </span>
@@ -343,6 +359,7 @@ export default function IntegrationsIndex() {
               <div style={{ fontWeight: 750 }}>Current sheet</div>
               <div className="lf-muted">{data.sheet.spreadsheetId ?? "—"}</div>
             </div>
+
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               {data.sheet.spreadsheetUrl ? (
                 <a
@@ -361,7 +378,8 @@ export default function IntegrationsIndex() {
           </div>
 
           <div className="lf-muted lf-mt-2">
-            Next: two-way sync (Requests ⇄ Sheet), status mapping, product image + product URL, and premium formatting rules.
+            Next: two-way sync (Requests ⇄ Sheet), status mapping, product image + product URL, and premium formatting
+            rules.
           </div>
         </div>
       </div>
