@@ -1,13 +1,15 @@
 // app/routes/app.integrations._index.tsx
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useLoaderData, useActionData } from "react-router";
+import { Form, Link, useLoaderData, useActionData, useFetcher } from "react-router";
+import { useEffect } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
+import { useAppBridge } from "@shopify/app-bridge-react";
+import { Redirect } from "@shopify/app-bridge/actions";
 import { createLeadformSpreadsheet, linkExistingSpreadsheet, parseSpreadsheetId } from "~/lib/sheets.server";
 
 type LoaderData = {
-  appUrl: string;
   google: {
     connected: boolean;
     tokenExpiresAt: string | null;
@@ -32,11 +34,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     select: { id: true },
   });
 
-  const appUrl = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
-
   if (!shop) {
     const data: LoaderData = {
-      appUrl,
       google: { connected: false, tokenExpiresAt: null },
       sheet: { spreadsheetId: null, spreadsheetUrl: null },
       recipients: [],
@@ -65,7 +64,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const spreadsheetUrl = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}` : null;
 
   const data: LoaderData = {
-    appUrl,
     google: {
       connected: Boolean(oauth),
       tokenExpiresAt: oauth?.expiresAt ? oauth.expiresAt.toISOString() : null,
@@ -160,6 +158,18 @@ export default function IntegrationsIndex() {
   const data = useLoaderData() as LoaderData;
   const actionData = useActionData() as any;
 
+  // App Bridge remote redirect for Google OAuth (avoids iframe/CSP issues)
+  const shopify = useAppBridge();
+  const googleAuthFetcher = useFetcher<{ ok: boolean; authUrl?: string; error?: string }>();
+
+  useEffect(() => {
+    const authUrl = googleAuthFetcher.data?.authUrl;
+    if (!authUrl) return;
+
+    const redirect = Redirect.create(shopify);
+    redirect.dispatch(Redirect.Action.REMOTE, authUrl);
+  }, [googleAuthFetcher.data?.authUrl, shopify]);
+
   const expiryLabel = data.google.tokenExpiresAt ? new Date(data.google.tokenExpiresAt).toLocaleString() : "—";
   const connected = data.google.connected;
 
@@ -174,8 +184,8 @@ export default function IntegrationsIndex() {
           <div>
             <div style={{ fontWeight: 800 }}>Notification emails</div>
             <div className="lf-muted">
-              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct
-              link to the sheet.
+              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct link
+              to the sheet.
             </div>
           </div>
           <div className="lf-muted">
@@ -189,6 +199,7 @@ export default function IntegrationsIndex() {
           <button className="lf-pill lf-pill--primary" type="submit">
             Add
           </button>
+
           {actionData?.error === "limit_reached" ? (
             <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
               Limit reached (10).
@@ -273,18 +284,19 @@ export default function IntegrationsIndex() {
               type="button"
               className="lf-pill lf-pill--primary"
               onClick={() => {
-                const base = (data.appUrl || "").replace(/\/$/, "");
-                if (!base) {
-                  alert("Missing SHOPIFY_APP_URL. Set it in .env and Vercel env vars.");
-                  return;
-                }
-                const returnTo = encodeURIComponent("/app/integrations");
-                const url = `${base}/app/integrations/google/start?returnTo=${returnTo}`;
-                window.open(url, "_blank", "noopener,noreferrer");
+                const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+                googleAuthFetcher.load(`/app/integrations/google/auth-url?returnTo=${returnTo}`);
               }}
+              disabled={googleAuthFetcher.state !== "idle"}
             >
-              Connect Google
+              {googleAuthFetcher.state !== "idle" ? "Connecting…" : "Connect Google"}
             </button>
+
+            {googleAuthFetcher.data?.error ? (
+              <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+                {googleAuthFetcher.data.error}
+              </span>
+            ) : null}
           </div>
         ) : (
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
@@ -323,7 +335,10 @@ export default function IntegrationsIndex() {
         )}
 
         <div className="lf-mt-4">
-          <div className="lf-mini-card" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div
+            className="lf-mini-card"
+            style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+          >
             <div>
               <div style={{ fontWeight: 750 }}>Current sheet</div>
               <div className="lf-muted">{data.sheet.spreadsheetId ?? "—"}</div>
