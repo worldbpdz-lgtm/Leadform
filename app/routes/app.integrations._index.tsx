@@ -1,6 +1,6 @@
 // app/routes/app.integrations._index.tsx
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData, useRevalidator } from "react-router";
+import { Form, Link, useActionData, useLoaderData, useLocation } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
@@ -22,10 +22,6 @@ type LoaderData = {
   recipients: Array<{ id: string; email: string; active: boolean; createdAt: string }>;
   limits: { recipientsMax: number };
 };
-
-type ActionData =
-  | { ok: true; kind: string; spreadsheetUrl?: string | null }
-  | { ok: false; error: string };
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -56,7 +52,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
     prisma.sheetsConnection.findFirst({
       where: { shopId: shop.id, active: true },
-      select: { spreadsheetId: true },
+      select: { spreadsheetId: true, spreadsheetName: true, defaultSheetName: true },
     }),
     prisma.notificationRecipient.findMany({
       where: { shopId: shop.id },
@@ -66,9 +62,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ]);
 
   const spreadsheetId = conn?.spreadsheetId ?? null;
-  const spreadsheetUrl = spreadsheetId
-    ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}`
-    : null;
+  const spreadsheetUrl = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}` : null;
 
   const data: LoaderData = {
     google: {
@@ -92,17 +86,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { shopDomain: session.shop },
     select: { id: true },
   });
-  if (!shop) return { ok: false, error: "shop_not_found" } satisfies ActionData;
+  if (!shop) return { ok: false, error: "shop_not_found" };
 
   // ─────────────────────────────────────────
   // Notifications recipients (max 10)
   // ─────────────────────────────────────────
   if (intent === "addRecipient") {
     const email = String(fd.get("email") || "").trim().toLowerCase();
-    if (!isValidEmail(email)) return { ok: false, error: "invalid_email" } satisfies ActionData;
+    if (!isValidEmail(email)) return { ok: false, error: "invalid_email" };
 
     const count = await prisma.notificationRecipient.count({ where: { shopId: shop.id } });
-    if (count >= 10) return { ok: false, error: "limit_reached" } satisfies ActionData;
+    if (count >= 10) return { ok: false, error: "limit_reached" };
 
     await prisma.notificationRecipient.upsert({
       where: { shopId_email: { shopId: shop.id, email } },
@@ -110,90 +104,59 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       create: { shopId: shop.id, email, active: true },
     });
 
-    return { ok: true, kind: "recipient_added" } satisfies ActionData;
+    return { ok: true };
   }
 
   if (intent === "toggleRecipient") {
     const id = String(fd.get("id") || "");
     const active = String(fd.get("active") || "") === "true";
-
-    // Optional hardening: ensure recipient belongs to shop
-    const row = await prisma.notificationRecipient.findFirst({ where: { id, shopId: shop.id } });
-    if (!row) return { ok: false, error: "not_found" } satisfies ActionData;
-
     await prisma.notificationRecipient.update({ where: { id }, data: { active } });
-    return { ok: true, kind: "recipient_toggled" } satisfies ActionData;
+    return { ok: true };
   }
 
   if (intent === "deleteRecipient") {
     const id = String(fd.get("id") || "");
-
-    // Optional hardening: ensure recipient belongs to shop
-    const row = await prisma.notificationRecipient.findFirst({ where: { id, shopId: shop.id } });
-    if (!row) return { ok: false, error: "not_found" } satisfies ActionData;
-
     await prisma.notificationRecipient.delete({ where: { id } });
-    return { ok: true, kind: "recipient_deleted" } satisfies ActionData;
+    return { ok: true };
   }
 
   // ─────────────────────────────────────────
   // Google / Sheets
   // ─────────────────────────────────────────
   if (intent === "disconnectGoogle") {
-    await prisma.sheetsConnection.updateMany({
-      where: { shopId: shop.id },
-      data: { active: false },
-    });
+    await prisma.sheetsConnection.updateMany({ where: { shopId: shop.id }, data: { active: false } });
     await prisma.oAuthGoogle.deleteMany({ where: { shopId: shop.id } });
-    return { ok: true, kind: "google_disconnected" } satisfies ActionData;
+    return { ok: true };
   }
 
   if (intent === "createSheet") {
     const res = await createLeadformSpreadsheet(session.shop);
-    return { ok: true, kind: "sheet_created", spreadsheetUrl: res.spreadsheetUrl } satisfies ActionData;
+    return { ok: true, created: true, spreadsheetUrl: res.spreadsheetUrl };
   }
 
   if (intent === "linkSheet") {
     const input = String(fd.get("spreadsheet") || "");
     const spreadsheetId = parseSpreadsheetId(input);
-    if (!spreadsheetId) return { ok: false, error: "invalid_sheet_id" } satisfies ActionData;
+    if (!spreadsheetId) return { ok: false, error: "invalid_sheet_id" };
 
     const res = await linkExistingSpreadsheet(session.shop, spreadsheetId);
-    return { ok: true, kind: "sheet_linked", spreadsheetUrl: res.spreadsheetUrl } satisfies ActionData;
+    return { ok: true, linked: true, spreadsheetUrl: res.spreadsheetUrl };
   }
 
-  return { ok: false, error: "unknown_intent" } satisfies ActionData;
+  return { ok: false, error: "unknown_intent" };
 };
 
 export default function IntegrationsIndex() {
   const data = useLoaderData() as LoaderData;
-  const actionData = useActionData() as ActionData | undefined;
-  const revalidator = useRevalidator();
+  const actionData = useActionData() as any;
+  const loc = useLocation();
 
-  // Refresh loader data after successful POSTs
-  // (so recipient list + sheet info update instantly)
-  if (actionData?.ok && revalidator.state === "idle") {
-    // This is safe because actionData only exists right after a submission
-    // and revalidator.state prevents loops.
-    queueMicrotask(() => revalidator.revalidate());
-  }
-
-  const expiryLabel = data.google.tokenExpiresAt
-    ? new Date(data.google.tokenExpiresAt).toLocaleString()
-    : "—";
-
+  const expiryLabel = data.google.tokenExpiresAt ? new Date(data.google.tokenExpiresAt).toLocaleString() : "—";
   const connected = data.google.connected;
 
-  const errorLabel =
-    !actionData || actionData.ok
-      ? null
-      : actionData.error === "limit_reached"
-        ? "Limit reached (10)."
-        : actionData.error === "invalid_email"
-          ? "Invalid email."
-          : actionData.error === "invalid_sheet_id"
-            ? "Invalid Spreadsheet URL/ID."
-            : actionData.error;
+  // Preserve current query params (host, shop, etc.) so we can return cleanly
+  const returnTo = `${loc.pathname}${loc.search || ""}`;
+  const startHref = `/app/integrations/google/start?returnTo=${encodeURIComponent(returnTo)}`;
 
   return (
     <div className="lf-enter" style={{ display: "grid", gap: 14 }}>
@@ -206,8 +169,7 @@ export default function IntegrationsIndex() {
           <div>
             <div style={{ fontWeight: 800 }}>Notification emails</div>
             <div className="lf-muted">
-              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification
-              with a direct link to the sheet.
+              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct link to the sheet.
             </div>
           </div>
           <div className="lf-muted">
@@ -215,17 +177,16 @@ export default function IntegrationsIndex() {
           </div>
         </div>
 
-        <Form method="post" className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
+        <Form method="post" className="lf-toolbar" style={{ marginTop: 12, gap: 10 }}>
           <input type="hidden" name="intent" value="addRecipient" />
           <input className="lf-input" name="email" placeholder="Add recipient email…" />
-          <button className="lf-pill lf-pill--primary" type="submit">
-            Add
-          </button>
+          <button className="lf-pill lf-pill--primary" type="submit">Add</button>
 
-          {!actionData?.ok && errorLabel ? (
-            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
-              {errorLabel}
-            </span>
+          {actionData?.error === "limit_reached" ? (
+            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Limit reached (10).</span>
+          ) : null}
+          {actionData?.error === "invalid_email" ? (
+            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Invalid email.</span>
           ) : null}
         </Form>
 
@@ -258,9 +219,7 @@ export default function IntegrationsIndex() {
                     <Form method="post">
                       <input type="hidden" name="intent" value="deleteRecipient" />
                       <input type="hidden" name="id" value={r.id} />
-                      <button className="lf-pill lf-pill--danger" type="submit">
-                        Remove
-                      </button>
+                      <button className="lf-pill lf-pill--danger" type="submit">Remove</button>
                     </Form>
                   </td>
                 </tr>
@@ -286,8 +245,7 @@ export default function IntegrationsIndex() {
           <div>
             <div style={{ fontWeight: 800 }}>Google Sheets</div>
             <div className="lf-muted">
-              Connect Google, then create a premium “Requests” sheet or link an existing one.
-              This will be the source of truth for two-way sync.
+              Connect Google, then create a premium “Requests” sheet or link an existing one. This will be the source of truth for two-way sync.
             </div>
           </div>
           <div className="lf-muted">
@@ -297,9 +255,9 @@ export default function IntegrationsIndex() {
 
         {!connected ? (
           <div className="lf-toolbar" style={{ marginTop: 12 }}>
-            {/* IMPORTANT: target="_top" to escape Shopify iframe for OAuth */}
+            {/* IMPORTANT: top-level navigation to escape Shopify iframe */}
             <a
-              href="/app/integrations/google/start"
+              href={startHref}
               target="_top"
               rel="noreferrer"
               className="lf-pill lf-pill--primary"
@@ -312,16 +270,12 @@ export default function IntegrationsIndex() {
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
             <Form method="post">
               <input type="hidden" name="intent" value="disconnectGoogle" />
-              <button className="lf-pill" type="submit">
-                Disconnect
-              </button>
+              <button className="lf-pill" type="submit">Disconnect</button>
             </Form>
 
             <Form method="post">
               <input type="hidden" name="intent" value="createSheet" />
-              <button className="lf-pill lf-pill--primary" type="submit">
-                Create sheet
-              </button>
+              <button className="lf-pill lf-pill--primary" type="submit">Create sheet</button>
             </Form>
 
             <Form method="post" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -332,14 +286,9 @@ export default function IntegrationsIndex() {
                 placeholder="Paste Spreadsheet URL or ID…"
                 style={{ minWidth: 320 }}
               />
-              <button className="lf-pill" type="submit">
-                Link
-              </button>
-
-              {!actionData?.ok && actionData?.error === "invalid_sheet_id" ? (
-                <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
-                  Invalid Spreadsheet URL/ID.
-                </span>
+              <button className="lf-pill" type="submit">Link</button>
+              {actionData?.error === "invalid_sheet_id" ? (
+                <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Invalid Spreadsheet URL/ID.</span>
               ) : null}
             </Form>
           </div>
@@ -354,6 +303,7 @@ export default function IntegrationsIndex() {
               <div style={{ fontWeight: 750 }}>Current sheet</div>
               <div className="lf-muted">{data.sheet.spreadsheetId ?? "—"}</div>
             </div>
+
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               {data.sheet.spreadsheetUrl ? (
                 <a
