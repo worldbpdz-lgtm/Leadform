@@ -1,12 +1,13 @@
 // app/routes/app.integrations._index.tsx
 import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { Form, Link, useLoaderData, useActionData } from "react-router";
+import { Form, useLoaderData, useActionData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
 import { createLeadformSpreadsheet, linkExistingSpreadsheet, parseSpreadsheetId } from "~/lib/sheets.server";
 
 type LoaderData = {
+  appUrl: string;
   google: {
     connected: boolean;
     tokenExpiresAt: string | null;
@@ -31,8 +32,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     select: { id: true },
   });
 
+  const appUrl = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
+
   if (!shop) {
     const data: LoaderData = {
+      appUrl,
       google: { connected: false, tokenExpiresAt: null },
       sheet: { spreadsheetId: null, spreadsheetUrl: null },
       recipients: [],
@@ -61,6 +65,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const spreadsheetUrl = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}` : null;
 
   const data: LoaderData = {
+    appUrl,
     google: {
       connected: Boolean(oauth),
       tokenExpiresAt: oauth?.expiresAt ? oauth.expiresAt.toISOString() : null,
@@ -162,25 +167,37 @@ export default function IntegrationsIndex() {
     <div className="lf-enter" style={{ display: "grid", gap: 14 }}>
       {/* TABLE 1: Notifications Emails */}
       <div className="lf-card">
-        <div className="lf-card-heading" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div
+          className="lf-card-heading"
+          style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+        >
           <div>
             <div style={{ fontWeight: 800 }}>Notification emails</div>
             <div className="lf-muted">
-              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct link to the sheet.
+              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct
+              link to the sheet.
             </div>
           </div>
-          <div className="lf-muted">{data.recipients.length}/{data.limits.recipientsMax}</div>
+          <div className="lf-muted">
+            {data.recipients.length}/{data.limits.recipientsMax}
+          </div>
         </div>
 
         <Form method="post" className="lf-toolbar" style={{ marginTop: 12, gap: 10 }}>
           <input type="hidden" name="intent" value="addRecipient" />
           <input className="lf-input" name="email" placeholder="Add recipient email…" />
-          <button className="lf-pill lf-pill--primary" type="submit">Add</button>
+          <button className="lf-pill lf-pill--primary" type="submit">
+            Add
+          </button>
           {actionData?.error === "limit_reached" ? (
-            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Limit reached (10).</span>
+            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+              Limit reached (10).
+            </span>
           ) : null}
           {actionData?.error === "invalid_email" ? (
-            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Invalid email.</span>
+            <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+              Invalid email.
+            </span>
           ) : null}
         </Form>
 
@@ -213,7 +230,9 @@ export default function IntegrationsIndex() {
                     <Form method="post">
                       <input type="hidden" name="intent" value="deleteRecipient" />
                       <input type="hidden" name="id" value={r.id} />
-                      <button className="lf-pill lf-pill--danger" type="submit">Remove</button>
+                      <button className="lf-pill lf-pill--danger" type="submit">
+                        Remove
+                      </button>
                     </Form>
                   </td>
                 </tr>
@@ -232,11 +251,15 @@ export default function IntegrationsIndex() {
 
       {/* TABLE 2: Google Sheets */}
       <div className="lf-card">
-        <div className="lf-card-heading" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div
+          className="lf-card-heading"
+          style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+        >
           <div>
             <div style={{ fontWeight: 800 }}>Google Sheets</div>
             <div className="lf-muted">
-              Connect Google, then create a premium “Requests” sheet or link an existing one. This will be the source of truth for two-way sync.
+              Connect Google, then create a premium “Requests” sheet or link an existing one. This will be the source of
+              truth for two-way sync.
             </div>
           </div>
           <div className="lf-muted">
@@ -246,28 +269,54 @@ export default function IntegrationsIndex() {
 
         {!connected ? (
           <div className="lf-toolbar" style={{ marginTop: 12 }}>
-            <Link to="/app/integrations/google/start" className="lf-pill lf-pill--primary" style={{ textDecoration: "none" }}>
+            <button
+              type="button"
+              className="lf-pill lf-pill--primary"
+              onClick={() => {
+                const base = (data.appUrl || "").replace(/\/$/, "");
+                if (!base) {
+                  alert("Missing SHOPIFY_APP_URL. Set it in .env and Vercel env vars.");
+                  return;
+                }
+                const returnTo = encodeURIComponent("/app/integrations");
+                const url = `${base}/app/integrations/google/start?returnTo=${returnTo}`;
+                window.open(url, "_blank", "noopener,noreferrer");
+              }}
+            >
               Connect Google
-            </Link>
+            </button>
           </div>
         ) : (
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
             <Form method="post">
               <input type="hidden" name="intent" value="disconnectGoogle" />
-              <button className="lf-pill" type="submit">Disconnect</button>
+              <button className="lf-pill" type="submit">
+                Disconnect
+              </button>
             </Form>
 
             <Form method="post">
               <input type="hidden" name="intent" value="createSheet" />
-              <button className="lf-pill lf-pill--primary" type="submit">Create sheet</button>
+              <button className="lf-pill lf-pill--primary" type="submit">
+                Create sheet
+              </button>
             </Form>
 
             <Form method="post" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <input type="hidden" name="intent" value="linkSheet" />
-              <input className="lf-input" name="spreadsheet" placeholder="Paste Spreadsheet URL or ID…" style={{ minWidth: 320 }} />
-              <button className="lf-pill" type="submit">Link</button>
+              <input
+                className="lf-input"
+                name="spreadsheet"
+                placeholder="Paste Spreadsheet URL or ID…"
+                style={{ minWidth: 320 }}
+              />
+              <button className="lf-pill" type="submit">
+                Link
+              </button>
               {actionData?.error === "invalid_sheet_id" ? (
-                <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>Invalid Spreadsheet URL/ID.</span>
+                <span className="lf-muted" style={{ color: "rgba(239,68,68,.9)" }}>
+                  Invalid Spreadsheet URL/ID.
+                </span>
               ) : null}
             </Form>
           </div>
@@ -281,7 +330,13 @@ export default function IntegrationsIndex() {
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               {data.sheet.spreadsheetUrl ? (
-                <a className="lf-pill lf-pill--primary" href={data.sheet.spreadsheetUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                <a
+                  className="lf-pill lf-pill--primary"
+                  href={data.sheet.spreadsheetUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ textDecoration: "none" }}
+                >
                   Open sheet
                 </a>
               ) : (
