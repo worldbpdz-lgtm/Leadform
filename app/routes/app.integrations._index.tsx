@@ -72,7 +72,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       tokenExpiresAt: oauth?.expiresAt ? oauth.expiresAt.toISOString() : null,
     },
     sheet: { spreadsheetId, spreadsheetUrl },
-    recipients: recipients.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })),
+    recipients: recipients.map((r) => ({
+      ...r,
+      createdAt: r.createdAt.toISOString(),
+    })),
     limits: { recipientsMax: 10 },
   };
 
@@ -88,17 +91,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     where: { shopDomain: session.shop },
     select: { id: true },
   });
-  if (!shop) return { ok: false, error: "shop_not_found" };
+  if (!shop) return { ok: false, error: "shop_not_found" as const };
 
   // ─────────────────────────────────────────
   // Notifications recipients (max 10)
   // ─────────────────────────────────────────
   if (intent === "addRecipient") {
     const email = String(fd.get("email") || "").trim().toLowerCase();
-    if (!isValidEmail(email)) return { ok: false, error: "invalid_email" };
+    if (!isValidEmail(email)) return { ok: false, error: "invalid_email" as const };
 
     const count = await prisma.notificationRecipient.count({ where: { shopId: shop.id } });
-    if (count >= 10) return { ok: false, error: "limit_reached" };
+    if (count >= 10) return { ok: false, error: "limit_reached" as const };
 
     await prisma.notificationRecipient.upsert({
       where: { shopId_email: { shopId: shop.id, email } },
@@ -106,20 +109,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       create: { shopId: shop.id, email, active: true },
     });
 
-    return { ok: true };
+    return { ok: true as const };
   }
 
   if (intent === "toggleRecipient") {
     const id = String(fd.get("id") || "");
     const active = String(fd.get("active") || "") === "true";
     await prisma.notificationRecipient.update({ where: { id }, data: { active } });
-    return { ok: true };
+    return { ok: true as const };
   }
 
   if (intent === "deleteRecipient") {
     const id = String(fd.get("id") || "");
     await prisma.notificationRecipient.delete({ where: { id } });
-    return { ok: true };
+    return { ok: true as const };
   }
 
   // ─────────────────────────────────────────
@@ -131,56 +134,52 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { active: false },
     });
     await prisma.oAuthGoogle.deleteMany({ where: { shopId: shop.id } });
-    return { ok: true };
+    return { ok: true as const };
   }
 
   if (intent === "createSheet") {
     const res = await createLeadformSpreadsheet(session.shop);
-    return { ok: true, created: true, spreadsheetUrl: res.spreadsheetUrl };
+    return { ok: true as const, created: true as const, spreadsheetUrl: res.spreadsheetUrl };
   }
 
   if (intent === "linkSheet") {
     const input = String(fd.get("spreadsheet") || "");
     const spreadsheetId = parseSpreadsheetId(input);
-    if (!spreadsheetId) return { ok: false, error: "invalid_sheet_id" };
+    if (!spreadsheetId) return { ok: false, error: "invalid_sheet_id" as const };
 
     const res = await linkExistingSpreadsheet(session.shop, spreadsheetId);
-    return { ok: true, linked: true, spreadsheetUrl: res.spreadsheetUrl };
+    return { ok: true as const, linked: true as const, spreadsheetUrl: res.spreadsheetUrl };
   }
 
-  return { ok: false, error: "unknown_intent" };
+  return { ok: false, error: "unknown_intent" as const };
 };
 
 export default function IntegrationsIndex() {
   const data = useLoaderData() as LoaderData;
   const actionData = useActionData() as any;
-  const loc = useLocation();
+  const location = useLocation();
 
-  const qs = new URLSearchParams(loc.search);
-  const shop = qs.get("shop") || "";
-  const host = qs.get("host") || "";
-  const embedded = qs.get("embedded") || "1";
+  // Preserve embedded params for internal navigation
+  const qs = new URLSearchParams(location.search);
+  const shop = qs.get("shop");
+  const host = qs.get("host");
+  const embedded = qs.get("embedded");
+  const hasEmbedParams = Boolean(shop && host);
 
-  const connected = data.google.connected;
+  // Google OAuth cannot be framed inside Shopify Admin (iframe), so we must escape iframe:
+  // use target="_top" and keep shop/host in URL.
+  const embeddedQuery = qs.toString();
+  const googleStartHref = `/app/integrations/google/start${embeddedQuery ? `?${embeddedQuery}` : ""}`;
+
   const expiryLabel = data.google.tokenExpiresAt
     ? new Date(data.google.tokenExpiresAt).toLocaleString()
     : "—";
 
-  // CRITICAL: keep returnTo SHORT, do not include current loc.search (it contains id_token/session/etc)
-  const returnTo = "/app/integrations";
-
-  const startHref =
-    `/app/integrations/google/start` +
-    `?shop=${encodeURIComponent(shop)}` +
-    `&host=${encodeURIComponent(host)}` +
-    `&embedded=${encodeURIComponent(embedded)}` +
-    `&returnTo=${encodeURIComponent(returnTo)}`;
-
-  const missingShopParams = !shop || !host;
+  const connected = data.google.connected;
 
   return (
     <div className="lf-enter" style={{ display: "grid", gap: 14 }}>
-      {/* TABLE 1: Notification emails */}
+      {/* TABLE 1: Notifications Emails */}
       <div className="lf-card">
         <div
           className="lf-card-heading"
@@ -189,7 +188,8 @@ export default function IntegrationsIndex() {
           <div>
             <div style={{ fontWeight: 800 }}>Notification emails</div>
             <div className="lf-muted">
-              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct link to the sheet.
+              Up to {data.limits.recipientsMax}. Every active email receives a “new request” notification with a direct
+              link to the sheet.
             </div>
           </div>
           <div className="lf-muted">
@@ -273,7 +273,8 @@ export default function IntegrationsIndex() {
           <div>
             <div style={{ fontWeight: 800 }}>Google Sheets</div>
             <div className="lf-muted">
-              Connect Google, then create a premium “Requests” sheet or link an existing one. This will be the source of truth for two-way sync.
+              Connect Google, then create a premium “Requests” sheet or link an existing one. This will be the source of
+              truth for two-way sync.
             </div>
           </div>
           <div className="lf-muted">
@@ -281,23 +282,24 @@ export default function IntegrationsIndex() {
           </div>
         </div>
 
-        {!connected ? (
+        {!hasEmbedParams ? (
           <div className="lf-toolbar" style={{ marginTop: 12 }}>
-            {missingShopParams ? (
-              <div className="lf-muted">
-                Open this page from inside Shopify Admin (embedded). Missing <code>shop</code>/<code>host</code> in URL.
-              </div>
-            ) : (
-              <a
-                href={startHref}
-                target="_top"
-                rel="noreferrer"
-                className="lf-pill lf-pill--primary"
-                style={{ textDecoration: "none" }}
-              >
-                Connect Google
-              </a>
-            )}
+            <div className="lf-muted">
+              Open this page from inside Shopify Admin (embedded). Missing shop/host in URL.
+            </div>
+          </div>
+        ) : !connected ? (
+          <div className="lf-toolbar" style={{ marginTop: 12 }}>
+            {/* Escape the iframe (Google blocks framing). */}
+            <a
+              className="lf-pill lf-pill--primary"
+              href={googleStartHref}
+              target="_top"
+              rel="noreferrer"
+              style={{ textDecoration: "none" }}
+            >
+              Connect Google
+            </a>
           </div>
         ) : (
           <div className="lf-toolbar" style={{ marginTop: 12, gap: 10, flexWrap: "wrap" }}>
@@ -344,7 +346,6 @@ export default function IntegrationsIndex() {
               <div style={{ fontWeight: 750 }}>Current sheet</div>
               <div className="lf-muted">{data.sheet.spreadsheetId ?? "—"}</div>
             </div>
-
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               {data.sheet.spreadsheetUrl ? (
                 <a
@@ -363,7 +364,8 @@ export default function IntegrationsIndex() {
           </div>
 
           <div className="lf-muted lf-mt-2">
-            Next: two-way sync (Requests ⇄ Sheet), status mapping, product image + product URL, and premium formatting rules.
+            Next: two-way sync (Requests ⇄ Sheet), status mapping, product image + product URL, and premium formatting
+            rules.
           </div>
         </div>
       </div>
