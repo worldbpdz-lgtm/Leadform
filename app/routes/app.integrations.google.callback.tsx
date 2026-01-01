@@ -1,112 +1,104 @@
 // app/routes/app.integrations.google.callback.tsx
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useRouteError } from "react-router";
-import { boundary } from "@shopify/shopify-app-react-router/server";
+import { redirect } from "react-router";
+
 import { prisma } from "~/db.server";
-import { encryptString, getGoogleOAuthClient, verifyState } from "~/lib/google.server";
+import { authenticate } from "~/shopify.server";
+import {
+  encryptString,
+  getGoogleOAuthClient,
+  verifyState,
+} from "~/lib/google.server";
 
-function redirect(to: string) {
-  return new Response(null, { status: 302, headers: { Location: to } });
+export const headers: HeadersFunction = () => ({
+  "Cache-Control": "no-store",
+});
+
+function toIntegrations(params: Record<string, string>) {
+  const qs = new URLSearchParams(params);
+  return redirect(`/app/integrations?${qs.toString()}`);
 }
-
-function safeJsonParse<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-type PackedState = { state: string; returnTo?: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
+  const stateRaw = url.searchParams.get("state");
   const error = url.searchParams.get("error");
 
-  const packed = safeJsonParse<PackedState>(url.searchParams.get("state"));
-  const rawState = packed?.state || "";
-  const returnTo = packed?.returnTo || "/app/integrations";
-
   if (error) {
-    return redirect(`${returnTo}?google=error&reason=${encodeURIComponent(error)}`);
-  }
-  if (!code) {
-    return redirect(`${returnTo}?google=error&reason=missing_code`);
+    return toIntegrations({ google: "error", reason: String(error) });
   }
 
-  // Verify signed state and recover shop domain
-  const ver = verifyState(rawState);
-  if (!ver.ok) {
-    return redirect(`${returnTo}?google=error&reason=bad_state`);
-  }
-  const shopDomain = ver.shopDomain;
-
-  // Exchange code → tokens
-  const client = getGoogleOAuthClient();
-  const { tokens } = await client.getToken(code);
-
-  const accessToken = tokens.access_token ?? null;
-  const refreshToken = tokens.refresh_token ?? null;
-
-  const expiresAt =
-    typeof tokens.expiry_date === "number" ? new Date(tokens.expiry_date) : undefined;
-
-  const scope =
-    typeof tokens.scope === "string" && tokens.scope.trim().length
-      ? tokens.scope.trim()
-      : null;
-
-  if (!accessToken) {
-    return redirect(`${returnTo}?google=error&reason=missing_access_token`);
+  if (!code || !stateRaw) {
+    return toIntegrations({ google: "error", reason: "missing_code_or_state" });
   }
 
-  // Find shop row by shopDomain from state
-  const shopRow = await prisma.shop.findUnique({
-    where: { shopDomain },
+  // ✅ verifyState(state) only
+  const st = verifyState(stateRaw);
+  if (!st.ok) {
+    return toIntegrations({ google: "error", reason: `state_${st.reason}` });
+  }
+
+  // ✅ bind state to the same shop as the Shopify session
+  if (st.shopDomain !== session.shop) {
+    return toIntegrations({ google: "error", reason: "shop_mismatch" });
+  }
+
+  const shop = await prisma.shop.upsert({
+    where: { shopDomain: session.shop },
+    update: { uninstalledAt: null },
+    create: { shopDomain: session.shop, installedAt: new Date() },
     select: { id: true },
   });
 
-  if (!shopRow) {
-    return redirect(`${returnTo}?google=error&reason=shop_not_found`);
+  const oauth = getGoogleOAuthClient();
+
+  const tokenRes = await oauth.getToken(code);
+  const tokens = tokenRes.tokens;
+
+  const accessToken = tokens.access_token || "";
+  const refreshToken = tokens.refresh_token || "";
+  const expiryMs = typeof tokens.expiry_date === "number" ? tokens.expiry_date : null;
+
+  if (!accessToken) {
+    return toIntegrations({ google: "error", reason: "missing_access_token" });
   }
 
-  // Preserve previous refresh token if Google didn't return one this time
+  // refresh_token may be omitted on re-connect; keep existing if present
   const existing = await prisma.oAuthGoogle.findUnique({
-    where: { shopId: shopRow.id },
+    where: { shopId: shop.id },
     select: { refreshTokenEnc: true },
   });
 
-  const accessTokenEnc = encryptString(accessToken);
-  const refreshTokenEnc =
-    refreshToken ? encryptString(refreshToken) : existing?.refreshTokenEnc ?? "";
+  const refreshTokenEnc = refreshToken
+    ? encryptString(refreshToken)
+    : existing?.refreshTokenEnc;
+
+  // If you never obtained a refresh token, you can't do reliable background sync
+  if (!refreshTokenEnc) {
+    return toIntegrations({ google: "error", reason: "missing_refresh_token_reconsent" });
+  }
+
+  const expiresAt = new Date(expiryMs ?? Date.now() + 55 * 60 * 1000);
 
   await prisma.oAuthGoogle.upsert({
-    where: { shopId: shopRow.id },
+    where: { shopId: shop.id },
     update: {
-      accessTokenEnc,
+      accessTokenEnc: encryptString(accessToken),
       refreshTokenEnc,
-      scope,
-      ...(expiresAt ? { expiresAt } : {}),
+      expiresAt,
+      scope: tokens.scope ?? null,
     },
     create: {
-      shopId: shopRow.id,
-      accessTokenEnc,
+      shopId: shop.id,
+      accessTokenEnc: encryptString(accessToken),
       refreshTokenEnc,
-      scope,
-      expiresAt: expiresAt ?? new Date(Date.now() + 55 * 60 * 1000),
+      expiresAt,
+      scope: tokens.scope ?? null,
     },
   });
 
-  // Do NOT create a SheetsConnection here.
-  // Only create/link a sheet in createLeadformSpreadsheet/linkExistingSpreadsheet.
-
-  return redirect(`${returnTo}?google=connected`);
+  return toIntegrations({ google: "connected" });
 };
-
-export function ErrorBoundary() {
-  return boundary.error(useRouteError());
-}
-
-export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);

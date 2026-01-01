@@ -9,6 +9,7 @@ import {
   uploadToSupabase,
   validateUploadFile,
 } from "~/lib/uploads.server";
+import { syncRequestToPrimarySheet } from "~/lib/sheets.server"; // ✅ NEW
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -88,13 +89,11 @@ function asFiles(val: any): File[] {
 async function readBody(request: Request): Promise<Record<string, any> | null> {
   const ct = request.headers.get("content-type") || "";
 
-  // JSON
   if (ct.includes("application/json")) {
     const body = await request.json().catch(() => null);
     return body && typeof body === "object" ? (body as any) : null;
   }
 
-  // FormData (multipart or urlencoded)
   if (
     ct.includes("multipart/form-data") ||
     ct.includes("application/x-www-form-urlencoded")
@@ -104,7 +103,6 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
 
     const obj: Record<string, any> = {};
     for (const [k, v] of fd.entries()) {
-      // preserve repeated keys as arrays (multi-file uploads)
       if (obj[k] === undefined) obj[k] = v;
       else if (Array.isArray(obj[k])) obj[k].push(v);
       else obj[k] = [obj[k], v];
@@ -112,7 +110,6 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
     return obj;
   }
 
-  // Fallback: try JSON
   const body = await request.json().catch(() => null);
   return body && typeof body === "object" ? (body as any) : null;
 }
@@ -140,7 +137,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     request.headers.get("Idempotency-Key") ||
     null;
 
-  // Ensure Shop exists
   const shop = await prisma.shop.upsert({
     where: { shopDomain: verified.shop },
     update: { uninstalledAt: null },
@@ -148,7 +144,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Resolve active form
   const settings = await prisma.shopSettings.findUnique({
     where: { shopId: shop.id },
     select: { currentFormId: true },
@@ -172,7 +167,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true },
   });
 
-  // Basic fields
   const firstName = stringOrNull(body.firstName);
   const lastName = stringOrNull(body.lastName);
   const email = stringOrNull(body.email);
@@ -193,7 +187,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const userAgent = request.headers.get("user-agent") ?? null;
 
-  // Items
   const productId = stringOrNull(body.productId);
   const variantId = stringOrNull(body.variantId);
   const qty = Math.max(1, Number(body.qty ?? 1));
@@ -213,8 +206,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "At least one item is required" }, 400);
   }
 
-  // Documents (up to 10 PDFs/images; mix allowed)
-  // Accept: "document" OR "documents" OR repeated keys (documents[])
   const files = [
     ...asFiles(body.document),
     ...asFiles(body.documents),
@@ -234,7 +225,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
   }
 
-  // Load role requirement (optional)
   const requirement =
     needsDoc && role?.id
       ? await prisma.roleRequirement.findFirst({
@@ -249,7 +239,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         })
       : null;
 
-  // Always allow PDF + images even if DB is misconfigured
   const defaultAllowed = ["application/pdf", "image/*"];
   const allowedMimeTypes = Array.from(
     new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
@@ -266,7 +255,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // Idempotency (only if client provides it; dedupe BEFORE creating uploads)
   if (idempotencyKey) {
     const existing = await prisma.request.findFirst({
       where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
@@ -278,9 +266,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const primary = items[0];
-  const values = body.values && typeof body.values === "object" ? body.values : {};
 
-  // Create request first, then attach uploads. If upload fails and docs required -> rollback.
+  // ✅ Enrich values with product info for Sheets (storefront can send these)
+  const baseValues = body.values && typeof body.values === "object" ? body.values : {};
+  const productTitle = stringOrNull(body.productTitle);
+  const productUrl = stringOrNull(body.productUrl);
+  const productImageUrl = stringOrNull(body.productImageUrl);
+
+  const values = {
+    ...(baseValues || {}),
+    ...(productTitle ? { productTitle } : {}),
+    ...(productUrl ? { productUrl } : {}),
+    ...(productImageUrl ? { productImageUrl } : {}),
+  };
+
   const created = await prisma.request.create({
     data: {
       shopId: shop.id,
@@ -336,7 +335,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             provider: "supabase",
             bucket,
             path,
-            url: null, // signed URLs in admin
+            url: null,
             mimeType: up.mimeType,
             sizeBytes: up.sizeBytes,
             checksum: up.checksum,
@@ -356,11 +355,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
     } catch (e: any) {
-      // enforce requirement by deleting request if upload failed
       await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
       return json({ ok: false, error: e?.message || "Upload failed" }, 500);
     }
   }
+
+  // ✅ DB -> Sheet (best-effort; never block customer)
+  syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
 
   return json({
     ok: true,
