@@ -2,7 +2,6 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
 import { encryptString, getGoogleOAuthClient, verifyState } from "~/lib/google.server";
 
@@ -22,8 +21,6 @@ function safeJsonParse<T>(raw: string | null): T | null {
 type PackedState = { state: string; returnTo?: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const error = url.searchParams.get("error");
@@ -39,11 +36,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return redirect(`${returnTo}?google=error&reason=missing_code`);
   }
 
-  const ver = verifyState(rawState, session.shop);
+  // Verify signed state and recover shop domain
+  const ver = verifyState(rawState);
   if (!ver.ok) {
     return redirect(`${returnTo}?google=error&reason=bad_state`);
   }
+  const shopDomain = ver.shopDomain;
 
+  // Exchange code → tokens
   const client = getGoogleOAuthClient();
   const { tokens } = await client.getToken(code);
 
@@ -62,17 +62,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return redirect(`${returnTo}?google=error&reason=missing_access_token`);
   }
 
+  // Find shop row by shopDomain from state
   const shopRow = await prisma.shop.findUnique({
-    where: { shopDomain: session.shop },
+    where: { shopDomain },
     select: { id: true },
   });
+
   if (!shopRow) {
     return redirect(`${returnTo}?google=error&reason=shop_not_found`);
   }
 
+  // Preserve previous refresh token if Google didn't return one this time
   const existing = await prisma.oAuthGoogle.findUnique({
     where: { shopId: shopRow.id },
-    select: { id: true, refreshTokenEnc: true },
+    select: { refreshTokenEnc: true },
   });
 
   const accessTokenEnc = encryptString(accessToken);
@@ -96,8 +99,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-    
-
+  // Do NOT create a SheetsConnection here.
+  // Only create/link a sheet in createLeadformSpreadsheet/linkExistingSpreadsheet.
 
   return redirect(`${returnTo}?google=connected`);
 };

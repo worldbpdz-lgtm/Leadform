@@ -47,7 +47,7 @@ export function makeState(shopDomain: string) {
   return `${payload}.${sig}`;
 }
 
-export function verifyState(state: string, expectedShopDomain: string) {
+export function verifyState(state: string) {
   if (!state || !state.includes(".")) return { ok: false as const, reason: "missing" };
 
   const lastDot = state.lastIndexOf(".");
@@ -55,23 +55,25 @@ export function verifyState(state: string, expectedShopDomain: string) {
   const sig = state.slice(lastDot + 1);
 
   const expectedSig = signState(payload);
+
+  // timingSafeEqual requires same length
+  if (sig.length !== expectedSig.length) return { ok: false as const, reason: "bad_sig" };
+
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
     return { ok: false as const, reason: "bad_sig" };
   }
 
   const [shopDomain, tsStr] = payload.split(":");
-  if (!shopDomain || shopDomain !== expectedShopDomain) {
-    return { ok: false as const, reason: "shop_mismatch" };
-  }
+  if (!shopDomain) return { ok: false as const, reason: "bad_shop" };
 
   const ts = Number(tsStr);
   if (!Number.isFinite(ts)) return { ok: false as const, reason: "bad_ts" };
 
-  // 15 minutes validity
   if (Date.now() - ts > 15 * 60 * 1000) return { ok: false as const, reason: "expired" };
 
-  return { ok: true as const };
+  return { ok: true as const, shopDomain };
 }
+
 
 /**
  * Simple encryption for storing OAuth tokens in DB.

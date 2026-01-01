@@ -15,7 +15,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const client = getGoogleOAuthClient();
 
   const url = new URL(request.url);
-  const returnTo = url.searchParams.get("returnTo") || "/app/integrations";
+
+  // Preserve shop/host/embedded params so we return to the embedded page
+  const embedParams = new URLSearchParams(url.searchParams);
+  embedParams.delete("returnTo");
+
+  const returnTo =
+    url.searchParams.get("returnTo") ||
+    (embedParams.toString() ? `/app/integrations?${embedParams.toString()}` : "/app/integrations");
 
   const state = makeState(session.shop);
 
