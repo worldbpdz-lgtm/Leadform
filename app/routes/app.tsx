@@ -19,10 +19,14 @@ function NavLink({
   label: string;
   match?: "exact" | "prefix";
 }) {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const active = match === "exact" ? pathname === href : pathname.startsWith(href);
+
+  // Preserve shop/host/embedded params across navigation
+  const fullHref = `${href}${search || ""}`;
+
   return (
-    <s-link href={href} {...(active ? { active: true } : {})}>
+    <s-link href={fullHref} {...(active ? { active: true } : {})}>
       {label}
     </s-link>
   );
