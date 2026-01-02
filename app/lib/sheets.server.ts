@@ -7,19 +7,7 @@ import {
   getGoogleOAuthClient,
 } from "~/lib/google.server";
 
-/**
- * Google Sheets integration for LeadForm:
- * - Create / link / unlink sheet
- * - Premium formatting (headers, banding, filters, dropdown status, conditional colors)
- * - DB -> Sheet upsert per request
- * - Sheet -> DB sync (status/email/phone/address)
- * - Full export (rebuild) with optional Shopify Admin GraphQL enrichment (title/handle/image + primary domain)
- */
-
-type GoogleAuthForShop = {
-  client: any; // google.auth.OAuth2
-  shopId: string;
-};
+type GoogleAuthForShop = { client: any; shopId: string };
 
 export type ShopifyAdminClient = {
   graphql: (query: string, opts?: any) => Promise<Response>;
@@ -27,28 +15,25 @@ export type ShopifyAdminClient = {
 
 const REQUESTS_SHEET_NAME = "Requests";
 
-/**
- * Premium, organized columns A..R
- */
 const HEADERS = [
-  "Request ID", // A (locked-ish)
-  "Status", // B (editable dropdown)
-  "Created At", // C
-  "Role", // D
-  "Customer", // E
-  "Email", // F (editable)
-  "Phone", // G (editable)
-  "Wilaya", // H
-  "Commune", // I
-  "Address", // J (editable)
-  "Items", // K
-  "Product", // L
-  "Qty", // M
-  "Product URL", // N (hyperlink)
-  "Product Image", // O (formula)
-  "Product Image URL", // P (raw url)
-  "Admin Link", // Q (hyperlink)
-  "Last Sync", // R
+  "Request ID",
+  "Status",
+  "Created At",
+  "Role",
+  "Customer",
+  "Email",
+  "Phone",
+  "Wilaya",
+  "Commune",
+  "Address",
+  "Items",
+  "Product",
+  "Qty",
+  "Product URL",
+  "Product Image",
+  "Product Image URL",
+  "Admin Link",
+  "Last Sync",
 ] as const;
 
 const STATUS_VALUES = [
@@ -65,7 +50,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function asShopifyGid(kind: "Product" | "ProductVariant", idOrGid: string | null) {
+function asShopifyGid(
+  kind: "Product" | "ProductVariant",
+  idOrGid: string | null
+) {
   if (!idOrGid) return null;
   const raw = String(idOrGid).trim();
   if (!raw) return null;
@@ -74,7 +62,9 @@ function asShopifyGid(kind: "Product" | "ProductVariant", idOrGid: string | null
   return null;
 }
 
-async function getGoogleClientForShop(shopDomain: string): Promise<GoogleAuthForShop> {
+async function getGoogleClientForShop(
+  shopDomain: string
+): Promise<GoogleAuthForShop> {
   const shop = await prisma.shop.findUnique({
     where: { shopDomain },
     select: { id: true },
@@ -83,21 +73,23 @@ async function getGoogleClientForShop(shopDomain: string): Promise<GoogleAuthFor
 
   const oauth = await prisma.oAuthGoogle.findUnique({
     where: { shopId: shop.id },
-    select: { accessTokenEnc: true, refreshTokenEnc: true, expiresAt: true },
+    select: { accessTokenEnc: true, refreshTokenEnc: true },
   });
   if (!oauth) throw new Error("google_not_connected");
 
   const client = getGoogleOAuthClient();
 
   const accessToken = decryptString(oauth.accessTokenEnc);
-  const refreshToken = oauth.refreshTokenEnc ? decryptString(oauth.refreshTokenEnc) : "";
+  const refreshToken = oauth.refreshTokenEnc
+    ? decryptString(oauth.refreshTokenEnc)
+    : "";
 
   client.setCredentials({
     access_token: accessToken,
     refresh_token: refreshToken || undefined,
   });
 
-  // Force a refresh if needed; persist new access token + expiresAt when available.
+  // refresh if needed; persist new access token when changed
   const before = String(client.credentials.access_token || "");
   await client.getAccessToken();
   const after = String(client.credentials.access_token || "");
@@ -120,17 +112,16 @@ export function sheetsApi(client: any) {
   return google.sheets({ version: "v4", auth: client });
 }
 
+function driveApi(client: any) {
+  return google.drive({ version: "v3", auth: client });
+}
+
 export function parseSpreadsheetId(input: string) {
   const raw = (input || "").trim();
   if (!raw) return null;
-
-  // Full URL
   const m = raw.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (m?.[1]) return m[1];
-
-  // Plain ID
   if (/^[a-zA-Z0-9-_]{20,}$/.test(raw)) return raw;
-
   return null;
 }
 
@@ -154,8 +145,7 @@ async function getPrimaryConnection(shopId: string) {
     if (conn?.active) return conn;
   }
 
-  // fallback to latest active connection
-  const fallback = await prisma.sheetsConnection.findFirst({
+  return prisma.sheetsConnection.findFirst({
     where: { shopId, active: true },
     orderBy: { updatedAt: "desc" },
     select: {
@@ -166,12 +156,9 @@ async function getPrimaryConnection(shopId: string) {
       active: true,
     },
   });
-
-  return fallback;
 }
 
 async function setPrimaryConnection(shopId: string, connectionId: string) {
-  // deterministic: only one active primary
   await prisma.$transaction([
     prisma.sheetsConnection.updateMany({
       where: { shopId },
@@ -190,8 +177,7 @@ async function setPrimaryConnection(shopId: string, connectionId: string) {
 }
 
 /**
- * Unlink current primary sheet.
- * Does NOT delete the Google Sheet file (Drive file remains).
+ * Unlink current primary sheet (does NOT delete the Drive file).
  */
 export async function unlinkPrimarySpreadsheet(shopDomain: string) {
   const shop = await prisma.shop.findUnique({
@@ -205,9 +191,7 @@ export async function unlinkPrimarySpreadsheet(shopDomain: string) {
     select: { primarySheetsConnectionId: true },
   });
 
-  if (!settings?.primarySheetsConnectionId) {
-    return { ok: true, unlinked: false };
-  }
+  if (!settings?.primarySheetsConnectionId) return { ok: true, unlinked: false };
 
   await prisma.$transaction([
     prisma.shopSettings.update({
@@ -221,6 +205,90 @@ export async function unlinkPrimarySpreadsheet(shopDomain: string) {
   ]);
 
   return { ok: true, unlinked: true };
+}
+
+/**
+ * DELETE current sheet (move Drive file to trash) + create a brand new sheet + export all requests to it.
+ * This is what your UI "Delete" button should call.
+ *
+ * Notes:
+ * - We "trash" (not permanent delete) to avoid irreversible loss.
+ * - If Drive trash fails (permissions), we still unlink + replace.
+ */
+export async function deleteAndReplacePrimarySpreadsheet(opts: {
+  shopDomain: string;
+  admin?: ShopifyAdminClient;
+}) {
+  const { shopDomain, admin } = opts;
+
+  const { client, shopId } = await getGoogleClientForShop(shopDomain);
+
+  const primary = await getPrimaryConnection(shopId);
+  if (!primary?.spreadsheetId) throw new Error("no_primary_sheet");
+
+  const oldSpreadsheetId = primary.spreadsheetId;
+
+  // Try to trash the Drive file (best-effort)
+  try {
+    const drive = driveApi(client);
+    await drive.files.update({
+      fileId: oldSpreadsheetId,
+      requestBody: { trashed: true },
+    });
+  } catch {
+    // ignore; still proceed with unlink + replace
+  }
+
+  // Unlink + deactivate connection
+  await prisma.$transaction([
+    prisma.shopSettings.update({
+      where: { shopId },
+      data: { primarySheetsConnectionId: null },
+    }),
+    prisma.sheetsConnection.update({
+      where: { id: primary.id },
+      data: { active: false },
+    }),
+  ]);
+
+  // Create a new sheet
+  const sheets = sheetsApi(client);
+  const created = await sheets.spreadsheets.create({
+    requestBody: {
+      properties: { title: `LeadForm — Requests` },
+      sheets: [{ properties: { title: REQUESTS_SHEET_NAME } }],
+    },
+  });
+
+  const newSpreadsheetId = created.data.spreadsheetId;
+  if (!newSpreadsheetId) throw new Error("sheet_create_failed");
+
+  const spreadsheetName = created.data.properties?.title ?? `LeadForm — Requests`;
+
+  await ensureRequestsSheetFormatted(sheets, newSpreadsheetId);
+
+  const conn = await prisma.sheetsConnection.upsert({
+    where: { shopId_spreadsheetId: { shopId, spreadsheetId: newSpreadsheetId } },
+    update: { active: true, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME },
+    create: { shopId, spreadsheetId: newSpreadsheetId, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME, active: true },
+    select: { id: true },
+  });
+
+  await setPrimaryConnection(shopId, conn.id);
+
+  // Export ALL requests into the new sheet (with optional Shopify enrichment)
+  await exportRequestsToSpreadsheet({
+    shopDomain,
+    spreadsheetId: newSpreadsheetId,
+    admin,
+  });
+
+  return {
+    ok: true,
+    deletedSpreadsheetId: oldSpreadsheetId,
+    spreadsheetId: newSpreadsheetId,
+    spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${newSpreadsheetId}`,
+  };
 }
 
 export async function createLeadformSpreadsheet(shopDomain: string) {
@@ -245,12 +313,12 @@ export async function createLeadformSpreadsheet(shopDomain: string) {
     where: { shopId_spreadsheetId: { shopId, spreadsheetId } },
     update: { active: true, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME },
     create: { shopId, spreadsheetId, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME, active: true },
-    select: { id: true, spreadsheetId: true },
+    select: { id: true },
   });
 
   await setPrimaryConnection(shopId, conn.id);
 
-  // Backfill so sheet is not empty (uses DB values; for enriched export call exportRequestsToSpreadsheet with admin)
+  // backfill (DB-based)
   await exportRequestsToSpreadsheet({ shopDomain, spreadsheetId });
 
   return {
@@ -259,7 +327,10 @@ export async function createLeadformSpreadsheet(shopDomain: string) {
   };
 }
 
-export async function linkExistingSpreadsheet(shopDomain: string, spreadsheetIdRaw: string) {
+export async function linkExistingSpreadsheet(
+  shopDomain: string,
+  spreadsheetIdRaw: string
+) {
   const spreadsheetId = parseSpreadsheetId(spreadsheetIdRaw) || spreadsheetIdRaw;
   if (!spreadsheetId) throw new Error("bad_spreadsheet_id");
 
@@ -281,7 +352,6 @@ export async function linkExistingSpreadsheet(shopDomain: string, spreadsheetIdR
 
   await setPrimaryConnection(shopId, conn.id);
 
-  // Backfill so sheet is not empty (uses DB values; for enriched export call exportRequestsToSpreadsheet with admin)
   await exportRequestsToSpreadsheet({ shopDomain, spreadsheetId });
 
   return {
@@ -291,163 +361,27 @@ export async function linkExistingSpreadsheet(shopDomain: string, spreadsheetIdR
 }
 
 /**
- * DB -> Sheet: upsert one request row (scans column A to find row).
- * Writes SheetsSyncLog (success/failed).
- */
-export async function syncRequestToPrimarySheet(shopDomain: string, requestId: string) {
-  const { client, shopId } = await getGoogleClientForShop(shopDomain);
-
-  const primary = await getPrimaryConnection(shopId);
-  if (!primary?.spreadsheetId) throw new Error("no_primary_sheet");
-
-  const sheets = sheetsApi(client);
-  const spreadsheetId = primary.spreadsheetId;
-
-  try {
-    await ensureRequestsSheetFormatted(sheets, spreadsheetId);
-
-    const r = await loadRequestForSheet(shopId, requestId);
-    if (!r) throw new Error("request_not_found");
-
-    const idToRow = await getRequestIdToRowMap(sheets, spreadsheetId);
-    const existingRow = idToRow.get(r.id) ?? null;
-
-    const rowValues = buildSheetRowValues(shopDomain, r);
-
-    if (existingRow) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${REQUESTS_SHEET_NAME}!A${existingRow}:R${existingRow}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [rowValues] },
-      });
-    } else {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `${REQUESTS_SHEET_NAME}!A:R`,
-        valueInputOption: "USER_ENTERED",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: { values: [rowValues] },
-      });
-    }
-
-    await prisma.sheetsSyncLog.create({
-      data: {
-        connectionId: primary.id,
-        requestId: r.id,
-        status: "success",
-        error: null,
-      },
-    });
-  } catch (e: any) {
-    await prisma.sheetsSyncLog
-      .create({
-        data: {
-          connectionId: primary?.id ?? "unknown",
-          requestId,
-          status: "failed",
-          error: e?.message || "sync_failed",
-        },
-      })
-      .catch(() => {});
-    throw e;
-  }
-}
-
-/**
- * Sheet -> DB: reads the sheet and applies changes into Requests:
- * - Status (column B)
- * - Email (F)
- * - Phone (G)
- * - Address (J)
- *
- * Call this from an admin button "Sync from sheet".
- */
-export async function syncRequestsFromSheetToDb(shopDomain: string) {
-  const { client, shopId } = await getGoogleClientForShop(shopDomain);
-
-  const primary = await getPrimaryConnection(shopId);
-  if (!primary?.spreadsheetId) throw new Error("no_primary_sheet");
-
-  const sheets = sheetsApi(client);
-  const spreadsheetId = primary.spreadsheetId;
-
-  await ensureRequestsSheetFormatted(sheets, spreadsheetId);
-
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${REQUESTS_SHEET_NAME}!A2:R`,
-  });
-
-  const rows: any[][] = resp.data.values || [];
-  if (!rows.length) return { ok: true, updated: 0 };
-
-  const allowedStatus = new Set<string>(STATUS_VALUES as unknown as string[]);
-
-  let updated = 0;
-
-  for (const row of rows) {
-    const requestId = String(row[0] || "").trim();
-    if (!requestId) continue;
-
-    const status = String(row[1] || "").trim();
-    const email = String(row[5] || "").trim();
-    const phone = String(row[6] || "").trim();
-    const address = String(row[9] || "").trim();
-
-    const data: any = {};
-    if (status && allowedStatus.has(status)) data.status = status as any;
-    data.email = email || null;
-    data.phone = phone || null;
-    data.address = address || null;
-
-    const res = await prisma.request.updateMany({
-      where: { id: requestId, shopId },
-      data,
-    });
-
-    if (res.count > 0) updated += 1;
-  }
-
-  return { ok: true, updated };
-}
-
-/**
  * Export ALL requests to a spreadsheet (fresh rebuild).
- *
- * Default behavior (no admin provided):
- * - uses DB values (values.productTitle/productUrl/productImageUrl) if present
- *
- * If you pass `admin`:
- * - enriches product title/handle/image using Shopify Admin GraphQL
- * - builds product URL using primaryDomain.url
+ * If `admin` is provided, enrich product title/handle/image + use primaryDomain url.
  */
 export async function exportRequestsToSpreadsheet(opts: {
   shopDomain: string;
-  spreadsheetId?: string; // if omitted, uses primary
+  spreadsheetId: string;
   admin?: ShopifyAdminClient;
 }) {
-  const { shopDomain, admin } = opts;
+  const { shopDomain, spreadsheetId, admin } = opts;
+
   const shop = await prisma.shop.findUnique({
     where: { shopDomain },
     select: { id: true },
   });
   if (!shop) throw new Error("shop_not_found");
 
-  const { client, shopId } = await getGoogleClientForShop(shopDomain);
+  const { client } = await getGoogleClientForShop(shopDomain);
   const sheets = sheetsApi(client);
-
-  const primary =
-    opts.spreadsheetId
-      ? { spreadsheetId: opts.spreadsheetId }
-      : await getPrimaryConnection(shopId);
-
-  const spreadsheetId = (primary as any)?.spreadsheetId;
-  if (!spreadsheetId) throw new Error("no_sheet");
 
   await ensureRequestsSheetFormatted(sheets, spreadsheetId);
 
-  // Load requests
   const reqs = await prisma.request.findMany({
     where: { shopId: shop.id },
     orderBy: { createdAt: "desc" },
@@ -455,12 +389,13 @@ export async function exportRequestsToSpreadsheet(opts: {
     include: { items: true, wilaya: true, commune: true },
   });
 
-  // Optional enrichment (Shopify primary domain + product nodes)
   let baseStoreUrl = `https://${shopDomain}`;
-  const productMap = new Map<string, { title: string | null; handle: string | null; imageUrl: string | null }>();
+  const productMap = new Map<
+    string,
+    { title: string | null; handle: string | null; imageUrl: string | null }
+  >();
 
   if (admin) {
-    // primary domain
     try {
       const resp = await admin.graphql(
         `#graphql
@@ -475,7 +410,6 @@ export async function exportRequestsToSpreadsheet(opts: {
       // ignore
     }
 
-    // products
     const productIds = Array.from(
       new Set(
         reqs
@@ -507,7 +441,8 @@ export async function exportRequestsToSpreadsheet(opts: {
         const nodes = json?.data?.nodes ?? [];
         for (const n of nodes) {
           if (!n?.id) continue;
-          const imageUrl = n?.featuredImage?.url ?? n?.images?.nodes?.[0]?.url ?? null;
+          const imageUrl =
+            n?.featuredImage?.url ?? n?.images?.nodes?.[0]?.url ?? null;
           productMap.set(String(n.id), {
             title: n?.title ?? null,
             handle: n?.handle ?? null,
@@ -515,24 +450,21 @@ export async function exportRequestsToSpreadsheet(opts: {
           });
         }
       } catch {
-        // ignore chunk errors
+        // ignore
       }
     }
   }
 
-  // Clear old content (keep header row)
   await sheets.spreadsheets.values.clear({
     spreadsheetId,
     range: `${REQUESTS_SHEET_NAME}!A2:R`,
   });
 
-  // Build rows oldest->newest for nice chronology
   const rows = reqs
     .slice()
     .reverse()
     .map((r) => buildSheetRowValues(shopDomain, r, { baseStoreUrl, productMap }));
 
-  // Write in chunks
   const CHUNK = 400;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
@@ -550,25 +482,26 @@ export async function exportRequestsToSpreadsheet(opts: {
 }
 
 async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) {
-  // Ensure the tab exists (create if missing)
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const found = meta.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME);
+  const found = meta.data.sheets?.find(
+    (s: any) => s.properties?.title === REQUESTS_SHEET_NAME
+  );
   const sheetId: number | null = found?.properties?.sheetId ?? null;
 
   if (sheetId === null) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
-      requestBody: { requests: [{ addSheet: { properties: { title: REQUESTS_SHEET_NAME } } }] },
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: REQUESTS_SHEET_NAME } } }],
+      },
     });
   }
 
-  // Re-fetch
   const meta2 = sheetId === null ? await sheets.spreadsheets.get({ spreadsheetId }) : meta;
   const sheet =
     meta2.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME) ?? null;
   const sid = sheet?.properties?.sheetId ?? 0;
 
-  // Write header row (A1:R1)
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `${REQUESTS_SHEET_NAME}!A1:R1`,
@@ -576,24 +509,18 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     requestBody: { values: [Array.from(HEADERS)] },
   });
 
-  // Best-effort cleanup to keep formatting idempotent
   const requests: any[] = [];
 
-  // Remove existing banding (prevents stacking)
+  // clean existing banding/conditional formats to avoid stacking
   const bandedRanges = (sheet as any)?.bandedRanges ?? [];
   for (const br of bandedRanges) {
-    if (br?.bandedRangeId != null) {
-      requests.push({ deleteBanding: { bandedRangeId: br.bandedRangeId } });
-    }
+    if (br?.bandedRangeId != null) requests.push({ deleteBanding: { bandedRangeId: br.bandedRangeId } });
   }
-
-  // Remove existing conditional formats (prevents stacking)
   const conditional = (sheet as any)?.conditionalFormats ?? [];
   for (let i = conditional.length - 1; i >= 0; i--) {
     requests.push({ deleteConditionalFormatRule: { sheetId: sid, index: i } });
   }
 
-  // Freeze header
   requests.push({
     updateSheetProperties: {
       properties: { sheetId: sid, gridProperties: { frozenRowCount: 1 } },
@@ -601,7 +528,6 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     },
   });
 
-  // Header style
   requests.push({
     repeatCell: {
       range: { sheetId: sid, startRowIndex: 0, endRowIndex: 1 },
@@ -613,11 +539,11 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
           textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true, fontSize: 10 },
         },
       },
-      fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+      fields:
+        "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
     },
   });
 
-  // Banded rows
   requests.push({
     addBanding: {
       bandedRange: {
@@ -631,7 +557,6 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     },
   });
 
-  // Filter (whole table)
   requests.push({
     setBasicFilter: {
       filter: {
@@ -640,7 +565,6 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     },
   });
 
-  // Status dropdown validation (B2:B)
   requests.push({
     setDataValidation: {
       range: { sheetId: sid, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
@@ -655,10 +579,8 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     },
   });
 
-  // Conditional formatting for status column (B)
   const statusRange = { sheetId: sid, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 };
 
-  // confirmed
   requests.push({
     addConditionalFormatRule: {
       rule: {
@@ -671,7 +593,6 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
       index: 0,
     },
   });
-  // cancelled
   requests.push({
     addConditionalFormatRule: {
       rule: {
@@ -684,7 +605,6 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
       index: 0,
     },
   });
-  // received
   requests.push({
     addConditionalFormatRule: {
       rule: {
@@ -697,53 +617,9 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
       index: 0,
     },
   });
-  // spam
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "spam" }] },
-          format: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 } },
-        },
-      },
-      index: 0,
-    },
-  });
-  // archived
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "archived" }] },
-          format: { backgroundColor: { red: 0.95, green: 0.95, blue: 0.95 } },
-        },
-      },
-      index: 0,
-    },
-  });
 
-  // Column widths (A..R)
   const colWidths = [
-    210, // A
-    120, // B
-    170, // C
-    110, // D
-    220, // E
-    220, // F
-    160, // G
-    160, // H
-    160, // I
-    260, // J
-    90,  // K
-    240, // L
-    70,  // M
-    260, // N
-    140, // O
-    260, // P
-    240, // Q
-    170, // R
+    210, 120, 170, 110, 220, 220, 160, 160, 160, 260, 90, 240, 70, 260, 140, 260, 240, 170,
   ];
 
   for (let i = 0; i < colWidths.length; i++) {
@@ -762,31 +638,6 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
   });
 }
 
-async function loadRequestForSheet(shopId: string, requestId: string) {
-  return prisma.request.findFirst({
-    where: { id: requestId, shopId },
-    include: { items: true, wilaya: true, commune: true },
-  });
-}
-
-async function getRequestIdToRowMap(sheets: any, spreadsheetId: string) {
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${REQUESTS_SHEET_NAME}!A2:A`,
-  });
-
-  const values: any[][] = resp.data.values || [];
-  const map = new Map<string, number>();
-
-  for (let i = 0; i < values.length; i++) {
-    const id = String(values[i]?.[0] || "").trim();
-    if (!id) continue;
-    map.set(id, i + 2); // row index starts at 2
-  }
-
-  return map;
-}
-
 function buildSheetRowValues(
   shopDomain: string,
   r: any,
@@ -800,13 +651,11 @@ function buildSheetRowValues(
 
   const itemsCount = Array.isArray(r.items) ? r.items.length : 0;
 
-  // From DB values (fallback)
   const v = r.values && typeof r.values === "object" ? (r.values as any) : {};
   let productTitle = v.productTitle || r.productId || r.items?.[0]?.productId || "—";
   let productUrl: string = v.productUrl || "";
   let productImageUrl: string = v.productImageUrl || "";
 
-  // Optional enrichment
   const baseStoreUrl = enrich?.baseStoreUrl || `https://${shopDomain}`;
   const storedProductId = r.productId || r.items?.[0]?.productId || null;
   const gid = asShopifyGid("Product", storedProductId);
@@ -828,20 +677,13 @@ function buildSheetRowValues(
   const adminLink = adminUrl ? `=HYPERLINK("${adminUrl}", "Open")` : "";
   const productLink = productUrl ? `=HYPERLINK("${productUrl}", "Open")` : "";
 
-  // Robust formula: uses ROW() so it works for both update + append
+  // Works for both update + append (no need to know row number)
   const imageFormula = `=IF(LEN(INDIRECT("P"&ROW())),IMAGE(INDIRECT("P"&ROW()),4,80,80),"")`;
-
-  // Items summary (compact)
-  const itemsSummary =
-    Array.isArray(r.items) && r.items.length
-      ? String(r.items.length)
-      : String(itemsCount);
 
   const w =
     r.wilaya?.nameFr ??
     r.wilaya?.nameAr ??
     (r.wilayaCode ? String(r.wilayaCode) : "");
-
   const c = r.commune?.nameFr ?? r.commune?.nameAr ?? "";
 
   return [
@@ -855,7 +697,7 @@ function buildSheetRowValues(
     w ?? "",                      // H
     c ?? "",                      // I
     r.address ?? "",              // J
-    itemsSummary,                 // K
+    String(itemsCount),           // K
     String(productTitle ?? "—"),  // L
     String(qty ?? 1),             // M
     productLink,                  // N
