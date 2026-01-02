@@ -9,7 +9,7 @@ import {
   uploadToSupabase,
   validateUploadFile,
 } from "~/lib/uploads.server";
-import { syncRequestToPrimarySheet } from "~/lib/sheets.server"; // ✅ NEW
+import { syncRequestToPrimarySheet } from "~/lib/sheets.server";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -72,6 +72,12 @@ function parseIntOrNull(input: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
+function parseQty(input: unknown): number {
+  const s = String(input ?? "").trim();
+  const n = Number.parseInt(s || "1", 10);
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
 function stringOrNull(input: unknown): string | null {
   if (input === null || input === undefined) return null;
   const s = String(input).trim();
@@ -112,6 +118,27 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
 
   const body = await request.json().catch(() => null);
   return body && typeof body === "object" ? (body as any) : null;
+}
+
+function parseValues(input: unknown): Record<string, any> {
+  if (!input) return {};
+  if (typeof input === "object" && !Array.isArray(input)) return input as any;
+
+  // When sent through FormData, values might arrive as a JSON string
+  if (typeof input === "string") {
+    const s = input.trim();
+    if (!s) return {};
+    if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
+      try {
+        const parsed = JSON.parse(s);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as any;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return {};
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -189,15 +216,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const productId = stringOrNull(body.productId);
   const variantId = stringOrNull(body.variantId);
-  const qty = Math.max(1, Number(body.qty ?? 1));
+  const qty = parseQty(body.qty);
 
   const items =
     Array.isArray(body.items) && body.items.length
-      ? body.items.map((it: any) => ({
-          productId: String(it.productId),
-          variantId: it.variantId ? String(it.variantId) : null,
-          qty: Math.max(1, Number(it.qty ?? 1)),
-        }))
+      ? body.items
+          .map((it: any) => ({
+            productId: stringOrNull(it?.productId),
+            variantId: stringOrNull(it?.variantId),
+            qty: parseQty(it?.qty),
+          }))
+          .filter((it: any) => Boolean(it.productId))
       : productId
       ? [{ productId, variantId, qty }]
       : null;
@@ -267,11 +296,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const primary = items[0];
 
-  // ✅ Enrich values with product info for Sheets (storefront can send these)
-  const baseValues = body.values && typeof body.values === "object" ? body.values : {};
-  const productTitle = stringOrNull(body.productTitle);
-  const productUrl = stringOrNull(body.productUrl);
-  const productImageUrl = stringOrNull(body.productImageUrl);
+  // Enrich values with product info for Sheets (storefront can send these)
+  const baseValues = parseValues((body as any).values);
+  const productTitle = stringOrNull(body.productTitle) || stringOrNull((baseValues as any)?.productTitle);
+  const productUrl = stringOrNull(body.productUrl) || stringOrNull((baseValues as any)?.productUrl);
+  const productImageUrl =
+    stringOrNull(body.productImageUrl) || stringOrNull((baseValues as any)?.productImageUrl);
 
   const values = {
     ...(baseValues || {}),
@@ -304,13 +334,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ip,
       userAgent,
 
-      productId: primary.productId,
+      productId: primary.productId!,
       variantId: primary.variantId,
       qty: primary.qty,
 
       values,
 
-      items: { create: items },
+      items: { create: items as any },
     },
     select: { id: true },
   });
@@ -360,7 +390,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // ✅ DB -> Sheet (best-effort; never block customer)
+  // DB -> Sheet (best-effort; never block customer)
   syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
 
   return json({

@@ -4,19 +4,25 @@ import { redirect } from "react-router";
 
 import { prisma } from "~/db.server";
 import { authenticate } from "~/shopify.server";
-import {
-  encryptString,
-  getGoogleOAuthClient,
-  verifyState,
-} from "~/lib/google.server";
+import { encryptString, getGoogleOAuthClient, verifyState } from "~/lib/google.server";
 
 export const headers: HeadersFunction = () => ({
   "Cache-Control": "no-store",
 });
 
-function toIntegrations(params: Record<string, string>) {
-  const qs = new URLSearchParams(params);
-  return redirect(`/app/integrations?${qs.toString()}`);
+function safeReturnTo(input: string | null) {
+  const v = (input || "").trim();
+  if (!v) return "/app/integrations";
+  // Only allow same-origin relative paths
+  if (!v.startsWith("/")) return "/app/integrations";
+  return v;
+}
+
+function redirectWithParams(returnTo: string, params: Record<string, string>) {
+  const base = safeReturnTo(returnTo);
+  const u = new URL(base, "https://local");
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return redirect(u.pathname + u.search);
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -27,23 +33,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const stateRaw = url.searchParams.get("state");
   const error = url.searchParams.get("error");
 
+  // Default fallback (we’ll override if state JSON provides returnTo)
+  let returnTo = "/app/integrations";
+
   if (error) {
-    return toIntegrations({ google: "error", reason: String(error) });
+    return redirectWithParams(returnTo, { google: "error", reason: String(error) });
   }
 
   if (!code || !stateRaw) {
-    return toIntegrations({ google: "error", reason: "missing_code_or_state" });
+    return redirectWithParams(returnTo, { google: "error", reason: "missing_code_or_state" });
   }
 
-  // ✅ verifyState(state) only
-  const st = verifyState(stateRaw);
+  // Your start route sends: state = JSON.stringify({ state, returnTo })
+  let signedState = stateRaw;
+  try {
+    const parsed = JSON.parse(stateRaw);
+    if (parsed && typeof parsed === "object") {
+      if (typeof (parsed as any).returnTo === "string") returnTo = (parsed as any).returnTo;
+      if (typeof (parsed as any).state === "string") signedState = (parsed as any).state;
+    }
+  } catch {
+    // If it wasn't JSON, treat stateRaw as the signed state
+  }
+
+  const st = verifyState(signedState);
   if (!st.ok) {
-    return toIntegrations({ google: "error", reason: `state_${st.reason}` });
+    return redirectWithParams(returnTo, { google: "error", reason: `state_${st.reason}` });
   }
 
-  // ✅ bind state to the same shop as the Shopify session
+  // Bind state to the same shop as the Shopify session
   if (st.shopDomain !== session.shop) {
-    return toIntegrations({ google: "error", reason: "shop_mismatch" });
+    return redirectWithParams(returnTo, { google: "error", reason: "shop_mismatch" });
   }
 
   const shop = await prisma.shop.upsert({
@@ -63,22 +83,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const expiryMs = typeof tokens.expiry_date === "number" ? tokens.expiry_date : null;
 
   if (!accessToken) {
-    return toIntegrations({ google: "error", reason: "missing_access_token" });
+    return redirectWithParams(returnTo, { google: "error", reason: "missing_access_token" });
   }
 
-  // refresh_token may be omitted on re-connect; keep existing if present
+  // refresh_token may be omitted on reconnect; keep existing if present
   const existing = await prisma.oAuthGoogle.findUnique({
     where: { shopId: shop.id },
     select: { refreshTokenEnc: true },
   });
 
-  const refreshTokenEnc = refreshToken
-    ? encryptString(refreshToken)
-    : existing?.refreshTokenEnc;
+  const refreshTokenEnc = refreshToken ? encryptString(refreshToken) : existing?.refreshTokenEnc;
 
-  // If you never obtained a refresh token, you can't do reliable background sync
   if (!refreshTokenEnc) {
-    return toIntegrations({ google: "error", reason: "missing_refresh_token_reconsent" });
+    return redirectWithParams(returnTo, { google: "error", reason: "missing_refresh_token_reconsent" });
   }
 
   const expiresAt = new Date(expiryMs ?? Date.now() + 55 * 60 * 1000);
@@ -100,5 +117,5 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  return toIntegrations({ google: "connected" });
+  return redirectWithParams(returnTo, { google: "connected" });
 };
