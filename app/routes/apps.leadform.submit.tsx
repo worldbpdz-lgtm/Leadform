@@ -30,8 +30,7 @@ function verifyAppProxyRequest(url: URL): VerifyResult {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
 
-  const provided =
-    url.searchParams.get("signature") || url.searchParams.get("hmac");
+  const provided = url.searchParams.get("signature") || url.searchParams.get("hmac");
   const shop = url.searchParams.get("shop");
 
   if (!provided || !shop) return { ok: false, reason: "Missing shop/signature" };
@@ -88,8 +87,7 @@ function stringOrNull(input: unknown): string | null {
 function asFiles(val: any): File[] {
   if (!val) return [];
   if (val instanceof File) return val.size > 0 ? [val] : [];
-  if (Array.isArray(val))
-    return val.filter((x) => x instanceof File && x.size > 0);
+  if (Array.isArray(val)) return val.filter((x) => x instanceof File && x.size > 0);
   return [];
 }
 
@@ -101,10 +99,7 @@ async function readBody(request: Request): Promise<Record<string, any> | null> {
     return body && typeof body === "object" ? (body as any) : null;
   }
 
-  if (
-    ct.includes("multipart/form-data") ||
-    ct.includes("application/x-www-form-urlencoded")
-  ) {
+  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
     const fd = await request.formData().catch(() => null);
     if (!fd) return null;
 
@@ -125,18 +120,13 @@ function parseValues(input: unknown): Record<string, any> {
   if (!input) return {};
   if (typeof input === "object" && !Array.isArray(input)) return input as any;
 
-  // When sent through FormData, values might arrive as a JSON string
   if (typeof input === "string") {
     const s = input.trim();
     if (!s) return {};
-    if (
-      (s.startsWith("{") && s.endsWith("}")) ||
-      (s.startsWith("[") && s.endsWith("]"))
-    ) {
+    if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
       try {
         const parsed = JSON.parse(s);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-          return parsed as any;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as any;
       } catch {
         // ignore
       }
@@ -165,9 +155,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const idempotencyKey =
-    stringOrNull(body.idempotencyKey) ||
-    request.headers.get("Idempotency-Key") ||
-    null;
+    stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
 
   const shop = await prisma.shop.upsert({
     where: { shopDomain: verified.shop },
@@ -209,8 +197,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const communeId = stringOrNull(body.communeId);
 
   const pageUrl = stringOrNull(body.pageUrl);
-  const referrer =
-    stringOrNull(body.referrer) || request.headers.get("referer") || null;
+  const referrer = stringOrNull(body.referrer) || request.headers.get("referer") || null;
 
   const ip =
     stringOrNull(body.ip) ||
@@ -248,8 +235,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ...asFiles(body["files[]"]),
   ];
 
-  const needsDoc =
-    roleType === RoleType.installer || roleType === RoleType.company;
+  const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
 
   if (needsDoc && files.length === 0) {
     return json({ ok: false, error: "Document is required for this role" }, 400);
@@ -301,16 +287,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const primary = items[0];
 
-  // Enrich values with product info for Sheets (storefront can send these)
   const baseValues = parseValues((body as any).values);
   const productTitle =
-    stringOrNull(body.productTitle) ||
-    stringOrNull((baseValues as any)?.productTitle);
+    stringOrNull(body.productTitle) || stringOrNull((baseValues as any)?.productTitle);
   const productUrl =
     stringOrNull(body.productUrl) || stringOrNull((baseValues as any)?.productUrl);
   const productImageUrl =
-    stringOrNull(body.productImageUrl) ||
-    stringOrNull((baseValues as any)?.productImageUrl);
+    stringOrNull(body.productImageUrl) || stringOrNull((baseValues as any)?.productImageUrl);
 
   const values = {
     ...(baseValues || {}),
@@ -355,8 +338,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   if (files.length) {
-    const bucket =
-      process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
+    const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
 
     try {
       for (const f of files) {
@@ -399,29 +381,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // Fire pixels (best-effort; never block customer)
-  firePixelsForRequest({
-    shopId: shop.id,
-    event: "request_submitted",
-    request: {
-      id: created.id,
-      email,
-      phone,
-      ip,
-      userAgent,
-      pageUrl,
-      referrer,
-      productId: primary.productId!,
-      qty: primary.qty,
-      createdAt: created.createdAt,
-      items: (items as any).map((it: any) => ({
-        productId: it.productId!,
-        qty: it.qty,
-      })),
-      currency: "DZD",
-      value: 0,
-    },
-  }).catch(() => {});
+  // Fire pixels (best-effort; keep short await to increase reliability on serverless)
+  await Promise.race([
+    firePixelsForRequest({
+      shopId: shop.id,
+      event: "request_submitted",
+      request: {
+        id: created.id,
+        email,
+        phone,
+        ip,
+        userAgent,
+        pageUrl,
+        referrer,
+        productId: primary.productId!,
+        qty: primary.qty,
+        createdAt: created.createdAt,
+        items: (items as any).map((it: any) => ({
+          productId: it.productId!,
+          qty: it.qty,
+        })),
+        currency: "DZD",
+        value: 0,
+      },
+    }),
+    new Promise((resolve) => setTimeout(resolve, 800)),
+  ]).catch(() => {});
 
   // DB -> Sheet (best-effort; never block customer)
   syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});

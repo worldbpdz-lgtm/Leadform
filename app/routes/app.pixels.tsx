@@ -16,7 +16,7 @@ import {
   firePixelsForRequest,
   upsertTrackingPixel,
 } from "~/lib/pixels.server";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), {
@@ -47,7 +47,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
     orderBy: { platform: "asc" },
   });
 
-  // No limits: return all logs
   const logs = await prisma.pixelEventLog.findMany({
     where: { shopId: shop.id },
     orderBy: { createdAt: "desc" },
@@ -85,10 +84,7 @@ export async function action({ request }: ActionFunctionArgs) {
       const platform = asPlatform(fd.get("platform"));
       const pixelId = String(fd.get("pixelId") || "").trim();
       if (!pixelId)
-        return json(
-          { ok: false, error: "Pixel ID is required." },
-          { status: 400 }
-        );
+        return json({ ok: false, error: "Pixel ID is required." }, { status: 400 });
 
       const enabled = parseBool(fd.get("enabled"));
       const apiEnabled = parseBool(fd.get("apiEnabled"));
@@ -148,10 +144,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({ ok: false, error: "Unknown intent" }, { status: 400 });
   } catch (e: any) {
-    return json(
-      { ok: false, error: e?.message ?? "Action failed" },
-      { status: 500 }
-    );
+    return json({ ok: false, error: e?.message ?? "Action failed" }, { status: 500 });
   }
 }
 
@@ -162,13 +155,37 @@ function platformLabel(pl: PixelPlatform | string) {
 function platformTitle(pl: PixelPlatform) {
   if (pl === "facebook") return "Meta";
   if (pl === "tiktok") return "TikTok Pixel";
-  return "Google (Gtag / GA4)";
+  return "Google (GA4)";
 }
 
 function platformHint(pl: PixelPlatform) {
-  if (pl === "facebook") return "Server-side supported (CAPI).";
-  if (pl === "tiktok") return "Config + logs ready (server wiring later).";
-  return "Config + logs ready (server wiring later).";
+  if (pl === "facebook") return "Server-side supported (Meta CAPI).";
+  if (pl === "tiktok") return "Server-side supported (TikTok Events API).";
+  return "Server-side supported (GA4 Measurement Protocol).";
+}
+
+function tokenLabel(pl: PixelPlatform) {
+  if (pl === "facebook") return "Access token (CAPI)";
+  if (pl === "tiktok") return "Access token (Events API)";
+  return "API secret (GA4)";
+}
+
+function tokenHelp(pl: PixelPlatform) {
+  if (pl === "facebook") return "Meta Conversions API access token. Stored encrypted.";
+  if (pl === "tiktok") return "TikTok Events API access token. Stored encrypted.";
+  return "GA4 Measurement Protocol API secret. Stored encrypted.";
+}
+
+function pixelIdLabel(pl: PixelPlatform) {
+  if (pl === "facebook") return "Pixel ID";
+  if (pl === "tiktok") return "Pixel Code";
+  return "Measurement ID";
+}
+
+function pixelIdPlaceholder(pl: PixelPlatform) {
+  if (pl === "facebook") return "1234567890";
+  if (pl === "tiktok") return "TikTok Pixel Code";
+  return "G-XXXXXXXXXX";
 }
 
 function platformClass(pl: PixelPlatform) {
@@ -185,15 +202,7 @@ function PlatformIcon({ platform }: { platform: PixelPlatform }) {
       ? "/brands/tiktok.svg"
       : "/brands/google.svg";
 
-  return (
-    <img
-      src={src}
-      alt=""
-      className="lf-px-logo"
-      loading="lazy"
-      decoding="async"
-    />
-  );
+  return <img src={src} alt="" className="lf-px-logo" loading="lazy" decoding="async" />;
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -224,22 +233,8 @@ export default function PixelsRoute() {
 
   const platforms: PixelPlatform[] = ["facebook", "tiktok", "google"];
 
+  // Always start closed (no localStorage restore)
   const [openPl, setOpenPl] = useState<PixelPlatform | null>(null);
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem("lf:px:open");
-      if (raw === "facebook" || raw === "tiktok" || raw === "google") {
-        setOpenPl(raw);
-      }
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    try {
-      if (openPl) window.localStorage.setItem("lf:px:open", openPl);
-    } catch {}
-  }, [openPl]);
 
   const hasAnyOpen = !!openPl;
 
@@ -597,9 +592,7 @@ export default function PixelsRoute() {
         <div className="lf-px__heroRow">
           <div>
             <div className="lf-card__title">Pixels</div>
-            <div className="lf-muted">
-              Configure IDs, select events, and test firing.
-            </div>
+            <div className="lf-muted">Configure IDs, select events, and test firing.</div>
           </div>
           <div className="lf-px__heroPill">Premium Tracking</div>
         </div>
@@ -627,9 +620,7 @@ export default function PixelsRoute() {
           return (
             <div
               key={pl}
-              className={`lf-px-card lf-card ${platformClass(pl)} ${
-                isOpen ? "is-open" : ""
-              }`}
+              className={`lf-px-card lf-card ${platformClass(pl)} ${isOpen ? "is-open" : ""}`}
             >
               <button
                 type="button"
@@ -653,7 +644,7 @@ export default function PixelsRoute() {
                       {enabled ? "Enabled" : "Disabled"}
                     </span>
                     <span className={`lf-px-chip ${apiEnabled ? "is-on" : ""}`}>
-                      {apiEnabled ? "Server API" : "Client only"}
+                      {apiEnabled ? "Server API" : "Disabled"}
                     </span>
                   </div>
                   <Chevron open={isOpen} />
@@ -688,15 +679,16 @@ export default function PixelsRoute() {
 
                     <div className="lf-px-form__grid">
                       <label className="lf-field lf-px-field">
-                        <div className="lf-label">Pixel ID</div>
+                        <div className="lf-label">{pixelIdLabel(pl)}</div>
                         <input
                           className="lf-input"
                           name="pixelId"
                           defaultValue={p?.pixelId ?? ""}
-                          placeholder={
-                            pl === "facebook" ? "1234567890" : "Pixel / Measurement ID"
-                          }
+                          placeholder={pixelIdPlaceholder(pl)}
                         />
+                        {pl === "google" ? (
+                          <div className="lf-muted">Use GA4 Measurement ID (starts with G-).</div>
+                        ) : null}
                       </label>
 
                       <div className="lf-px-toggles">
@@ -720,16 +712,14 @@ export default function PixelsRoute() {
                       </div>
 
                       <label className="lf-field lf-px-field">
-                        <div className="lf-label">Access token / API secret</div>
+                        <div className="lf-label">{tokenLabel(pl)}</div>
                         <input
                           className="lf-input"
                           name="accessToken"
-                          placeholder="Leave empty to keep current token"
+                          placeholder="Leave empty to keep current value"
                           autoComplete="off"
                         />
-                        <div className="lf-muted">
-                          Stored encrypted. Required only for Meta CAPI.
-                        </div>
+                        <div className="lf-muted">{tokenHelp(pl)}</div>
                       </label>
 
                       <label className="lf-field lf-px-field">
@@ -739,6 +729,11 @@ export default function PixelsRoute() {
                           name="testCode"
                           defaultValue={p?.testCode ?? ""}
                         />
+                        {pl === "google" ? (
+                          <div className="lf-muted">
+                            Optional. Test code is not used by GA4 Measurement Protocol.
+                          </div>
+                        ) : null}
                       </label>
 
                       <div className="lf-px-eventsWrap">
