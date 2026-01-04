@@ -16,6 +16,7 @@ import {
   firePixelsForRequest,
   upsertTrackingPixel,
 } from "~/lib/pixels.server";
+import { useEffect, useMemo, useState } from "react";
 
 function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), {
@@ -148,6 +149,28 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
+function platformLabel(pl: PixelPlatform | string) {
+  return pl === "facebook" ? "Meta" : pl === "tiktok" ? "TikTok" : "Google";
+}
+
+function platformTitle(pl: PixelPlatform) {
+  if (pl === "facebook") return "Meta";
+  if (pl === "tiktok") return "TikTok Pixel";
+  return "Google (Gtag / GA4)";
+}
+
+function platformHint(pl: PixelPlatform) {
+  if (pl === "facebook") return "Server-side supported (CAPI).";
+  if (pl === "tiktok") return "Config + logs ready (server wiring later).";
+  return "Config + logs ready (server wiring later).";
+}
+
+function platformClass(pl: PixelPlatform) {
+  if (pl === "facebook") return "is-meta";
+  if (pl === "tiktok") return "is-tiktok";
+  return "is-google";
+}
+
 function PlatformIcon({ platform }: { platform: PixelPlatform }) {
   const src =
     platform === "facebook"
@@ -160,53 +183,425 @@ function PlatformIcon({ platform }: { platform: PixelPlatform }) {
     <img
       src={src}
       alt=""
-      className="lf-px-logoImg"
+      className="lf-px-logo"
       loading="lazy"
       decoding="async"
     />
   );
 }
 
-function PlatformMeta(pl: PixelPlatform) {
-  if (pl === "facebook") {
-    return {
-      title: "Meta",
-      hint: "Server-side supported (CAPI).",
-      cls: "lf-px-card--meta",
-      color: "meta",
-    };
-  }
-  if (pl === "tiktok") {
-    return {
-      title: "TikTok Pixel",
-      hint: "Config + logs ready (server wiring later).",
-      cls: "lf-px-card--tiktok",
-      color: "tiktok",
-    };
-  }
-  return {
-    title: "Google (Gtag / GA4)",
-    hint: "Config + logs ready (server wiring later).",
-    cls: "lf-px-card--google",
-    color: "google",
-  };
-}
-
-function displayPlatformName(pl: string) {
-  return pl === "facebook" ? "Meta" : pl;
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <span className={`lf-px-chev ${open ? "is-open" : ""}`} aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M6 9l6 6 6-6"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
 }
 
 export default function PixelsRoute() {
   const data = useLoaderData() as any;
   const actionData = useActionData() as any;
 
-  const byPlatform = new Map<string, any>();
-  for (const p of data.pixels as any[]) byPlatform.set(p.platform, p);
+  const byPlatform = useMemo(() => {
+    const m = new Map<string, any>();
+    for (const p of data.pixels as any[]) m.set(p.platform, p);
+    return m;
+  }, [data.pixels]);
 
   const platforms: PixelPlatform[] = ["facebook", "tiktok", "google"];
 
+  const [openPl, setOpenPl] = useState<PixelPlatform | null>(null);
+
+  // Restore last opened card for nicer UX
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("lf:px:open");
+      if (raw === "facebook" || raw === "tiktok" || raw === "google") {
+        setOpenPl(raw);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (openPl) window.localStorage.setItem("lf:px:open", openPl);
+    } catch {}
+  }, [openPl]);
+
+  // If an action error happens, keep whatever open (no forced close)
+  const hasAnyOpen = !!openPl;
+
   return (
     <div className="lf-admin lf-px">
+      <style>{`
+        /* =========================================================================
+           Pixels – Premium UI (self-contained styles for this route)
+           ========================================================================= */
+        .lf-px {
+          --px-bg1: rgba(99, 102, 241, 0.10);
+          --px-bg2: rgba(56, 189, 248, 0.08);
+          --px-card: rgba(255,255,255,0.85);
+          --px-border: rgba(16, 24, 40, 0.10);
+          --px-text: rgba(17, 24, 39, 0.96);
+          --px-muted: rgba(55, 65, 81, 0.78);
+          --px-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+          --px-shadow2: 0 10px 24px rgba(15, 23, 42, 0.10);
+          --px-radius: 18px;
+        }
+
+        .lf-px .lf-muted { color: var(--px-muted); }
+        .lf-px .lf-card { border: 1px solid var(--px-border); box-shadow: var(--px-shadow); }
+
+        /* Hero */
+        .lf-px__hero {
+          background:
+            radial-gradient(900px 250px at 10% 0%, var(--px-bg1), transparent 60%),
+            radial-gradient(900px 250px at 85% 0%, var(--px-bg2), transparent 62%),
+            linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.78));
+          backdrop-filter: blur(8px);
+        }
+        .lf-px__heroRow {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+        }
+        .lf-px__heroPill {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(99, 102, 241, 0.25);
+          background: rgba(99, 102, 241, 0.08);
+          color: rgba(17, 24, 39, 0.9);
+          font-weight: 600;
+          letter-spacing: 0.2px;
+          white-space: nowrap;
+        }
+
+        /* Grid behavior:
+           - Default: 3 columns compact
+           - When one is open: switch to single column (stack)
+        */
+        .lf-px__grid {
+          margin-top: 14px;
+          display: grid;
+          gap: 14px;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          align-items: start;
+        }
+        .lf-px__grid.is-open {
+          grid-template-columns: 1fr;
+          gap: 12px;
+        }
+
+        /* Card shell */
+        .lf-px-card {
+          position: relative;
+          overflow: hidden;
+          border-radius: var(--px-radius);
+          background: var(--px-card);
+          backdrop-filter: blur(8px);
+        }
+
+        /* Top color band (about 30% visually when expanded, compact when closed) */
+        .lf-px-card::before {
+          content: "";
+          position: absolute;
+          left: 0; right: 0; top: 0;
+          height: 130px;
+          opacity: 1;
+          pointer-events: none;
+          transform: translateY(0);
+        }
+
+        /* Platform gradients */
+        .lf-px-card.is-meta::before {
+          background:
+            radial-gradient(320px 120px at 18% 40%, rgba(0, 164, 255, 0.35), transparent 60%),
+            radial-gradient(280px 140px at 72% 20%, rgba(143, 64, 255, 0.35), transparent 60%),
+            linear-gradient(90deg, rgba(79, 70, 229, 0.20), rgba(0, 186, 255, 0.14));
+        }
+        .lf-px-card.is-tiktok::before {
+          background:
+            radial-gradient(320px 120px at 20% 40%, rgba(0, 242, 234, 0.26), transparent 60%),
+            radial-gradient(280px 140px at 75% 25%, rgba(255, 0, 80, 0.20), transparent 60%),
+            linear-gradient(90deg, rgba(2, 6, 23, 0.14), rgba(2, 6, 23, 0.06));
+        }
+        .lf-px-card.is-google::before {
+          background:
+            radial-gradient(320px 120px at 18% 35%, rgba(66, 133, 244, 0.22), transparent 60%),
+            radial-gradient(280px 140px at 62% 15%, rgba(52, 168, 83, 0.18), transparent 60%),
+            radial-gradient(260px 120px at 82% 55%, rgba(251, 188, 5, 0.16), transparent 60%),
+            radial-gradient(260px 120px at 45% 70%, rgba(234, 67, 53, 0.12), transparent 60%),
+            linear-gradient(90deg, rgba(66, 133, 244, 0.10), rgba(255,255,255,0.00));
+        }
+
+        /* Header button */
+        .lf-px-headBtn {
+          position: relative;
+          z-index: 1;
+          display: flex;
+          width: 100%;
+          border: 0;
+          background: transparent;
+          cursor: pointer;
+          padding: 14px 14px 12px 14px;
+          text-align: left;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .lf-px-headLeft {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          min-width: 0;
+        }
+
+        .lf-px-logoWrap {
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          display: grid;
+          place-items: center;
+          background: rgba(255,255,255,0.80);
+          border: 1px solid rgba(15, 23, 42, 0.10);
+          box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+          flex: 0 0 auto;
+        }
+        .lf-px-logo {
+          width: 22px;
+          height: 22px;
+          object-fit: contain;
+          display: block;
+        }
+
+        .lf-px-titleWrap { min-width: 0; }
+        .lf-px-title {
+          margin: 0;
+          font-size: 14px;
+          line-height: 1.1;
+          font-weight: 750;
+          letter-spacing: 0.2px;
+          color: rgba(17, 24, 39, 0.92);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .lf-px-hint {
+          margin-top: 4px;
+          font-size: 12px;
+          line-height: 1.2;
+          color: rgba(55, 65, 81, 0.72);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .lf-px-headRight {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex: 0 0 auto;
+        }
+
+        .lf-px-chips {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+        }
+        .lf-px-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(15, 23, 42, 0.10);
+          background: rgba(255,255,255,0.70);
+          font-size: 12px;
+          font-weight: 650;
+          color: rgba(17, 24, 39, 0.80);
+        }
+        .lf-px-chip.is-on {
+          border-color: rgba(16, 185, 129, 0.28);
+          background: rgba(16, 185, 129, 0.10);
+          color: rgba(17, 24, 39, 0.92);
+        }
+
+        .lf-px-chev {
+          width: 34px;
+          height: 34px;
+          border-radius: 12px;
+          display: grid;
+          place-items: center;
+          border: 1px solid rgba(15, 23, 42, 0.10);
+          background: rgba(255,255,255,0.75);
+          box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+          transition: transform 240ms ease, background 240ms ease;
+        }
+        .lf-px-chev svg { opacity: 0.9; }
+        .lf-px-chev.is-open {
+          transform: rotate(180deg);
+          background: rgba(255,255,255,0.90);
+        }
+
+        /* Body: animated expand/collapse */
+        .lf-px-body {
+          position: relative;
+          z-index: 1;
+          padding: 0 14px 14px 14px;
+        }
+        .lf-px-collapse {
+          overflow: hidden;
+          max-height: 0;
+          opacity: 0;
+          transform: translateY(-6px);
+          transition:
+            max-height 320ms cubic-bezier(.2,.8,.2,1),
+            opacity 220ms ease,
+            transform 220ms ease;
+          will-change: max-height, opacity, transform;
+        }
+        .lf-px-card.is-open .lf-px-collapse {
+          max-height: 1800px; /* plenty for the form */
+          opacity: 1;
+          transform: translateY(0);
+        }
+
+        /* Make the opened card feel like "full page" within the section */
+        .lf-px-card.is-open {
+          box-shadow: var(--px-shadow2);
+        }
+
+        /* “Last fired / remove” row */
+        .lf-px-topRow {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin: 2px 0 10px;
+        }
+        .lf-px-topRow .lf-btn--ghost {
+          padding: 6px 10px;
+          border-radius: 10px;
+        }
+
+        /* Form layout */
+        .lf-px-form__grid {
+          display: grid;
+          grid-template-columns: 1.2fr 1fr;
+          gap: 12px;
+          align-items: start;
+          padding: 12px;
+          border-radius: 16px;
+          border: 1px solid rgba(15, 23, 42, 0.10);
+          background: rgba(255,255,255,0.90);
+        }
+
+        .lf-px-toggles {
+          display: flex;
+          gap: 12px;
+          flex-wrap: wrap;
+          align-items: center;
+          padding-top: 18px;
+        }
+
+        /* Better checkbox look (uses your existing lf-check base if present) */
+        .lf-px-check {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 10px;
+          border-radius: 12px;
+          border: 1px solid rgba(15, 23, 42, 0.10);
+          background: rgba(255,255,255,0.75);
+          font-weight: 650;
+          font-size: 12px;
+          color: rgba(17, 24, 39, 0.86);
+        }
+        .lf-px-check input { transform: translateY(0.5px); }
+
+        .lf-px-eventsWrap {
+          grid-column: 1 / -1;
+        }
+        .lf-px-events {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-top: 8px;
+        }
+        .lf-px-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(15, 23, 42, 0.12);
+          background: rgba(255,255,255,0.78);
+          font-size: 12px;
+          font-weight: 650;
+          color: rgba(17, 24, 39, 0.86);
+          transition: transform 140ms ease, box-shadow 140ms ease;
+        }
+        .lf-px-pill:hover { transform: translateY(-1px); box-shadow: 0 10px 18px rgba(15, 23, 42, 0.06); }
+
+        .lf-px-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-top: 12px;
+        }
+        .lf-px-footer__left {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+        }
+        .lf-px-save {
+          border-radius: 12px !important;
+          padding: 10px 14px !important;
+          font-weight: 750 !important;
+        }
+        .lf-px-test {
+          border-radius: 12px !important;
+          padding: 10px 14px !important;
+          font-weight: 700 !important;
+        }
+
+        /* Logs */
+        .lf-px-logs { margin-top: 14px; }
+        .lf-px-table th, .lf-px-table td { font-size: 12px; }
+        .lf-px-dot {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          margin-right: 8px;
+          vertical-align: middle;
+        }
+        .lf-px-dot--facebook { background: rgba(99,102,241,0.85); }
+        .lf-px-dot--tiktok { background: rgba(2,6,23,0.85); }
+        .lf-px-dot--google { background: rgba(66,133,244,0.85); }
+
+        /* Responsive */
+        @media (max-width: 1100px) {
+          .lf-px__grid { grid-template-columns: 1fr; }
+          .lf-px__grid.is-open { grid-template-columns: 1fr; }
+          .lf-px-form__grid { grid-template-columns: 1fr; }
+          .lf-px-toggles { padding-top: 0; }
+        }
+      `}</style>
+
       <div className="lf-card lf-px__hero">
         <div className="lf-px__heroRow">
           <div>
@@ -226,9 +621,8 @@ export default function PixelsRoute() {
         ) : null}
       </div>
 
-      <div className="lf-px__grid">
+      <div className={`lf-px__grid ${hasAnyOpen ? "is-open" : ""}`}>
         {platforms.map((pl) => {
-          const meta = PlatformMeta(pl);
           const p = byPlatform.get(pl);
           const ev = (p?.events ?? {}) as Record<string, boolean>;
 
@@ -238,61 +632,57 @@ export default function PixelsRoute() {
           const saveFormId = `px-save-${pl}`;
           const testFormId = `px-test-${pl}`;
 
+          const isOpen = openPl === pl;
+
           return (
-            <div className={`lf-card lf-px-card ${meta.cls}`} key={pl}>
-              <details className="lf-px-acc">
-                <summary className="lf-px-acc__summary">
-                  <div className="lf-px-acc__summaryLeft">
-                    <span className={`lf-px-badge lf-px-badge--${meta.color}`}>
-                      <PlatformIcon platform={pl} />
+            <div
+              key={pl}
+              className={`lf-px-card lf-card ${platformClass(pl)} ${
+                isOpen ? "is-open" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="lf-px-headBtn"
+                onClick={() => setOpenPl((cur) => (cur === pl ? null : pl))}
+                aria-expanded={isOpen}
+              >
+                <div className="lf-px-headLeft">
+                  <span className="lf-px-logoWrap">
+                    <PlatformIcon platform={pl} />
+                  </span>
+                  <div className="lf-px-titleWrap">
+                    <div className="lf-px-title">{platformTitle(pl)}</div>
+                    <div className="lf-px-hint">{platformHint(pl)}</div>
+                  </div>
+                </div>
+
+                <div className="lf-px-headRight">
+                  <div className="lf-px-chips">
+                    <span className={`lf-px-chip ${enabled ? "is-on" : ""}`}>
+                      {enabled ? "Enabled" : "Disabled"}
                     </span>
-
-                    <div className="lf-px-acc__titleWrap">
-                      <div className="lf-px-card__title">{meta.title}</div>
-                      <div className="lf-px-sub">{meta.hint}</div>
-                    </div>
+                    <span className={`lf-px-chip ${apiEnabled ? "is-on" : ""}`}>
+                      {apiEnabled ? "Server API" : "Client only"}
+                    </span>
                   </div>
+                  <Chevron open={isOpen} />
+                </div>
+              </button>
 
-                  <div className="lf-px-acc__summaryRight">
-                    <div className="lf-px-chips">
-                      <span className={`lf-px-chip ${enabled ? "is-on" : ""}`}>
-                        {enabled ? "Enabled" : "Disabled"}
-                      </span>
-                      <span className={`lf-px-chip ${apiEnabled ? "is-on" : ""}`}>
-                        {apiEnabled ? "Server API" : "Client only"}
-                      </span>
-                    </div>
-
-                    <div className="lf-px-acc__caret" aria-hidden="true">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                        <path
-                          d="M6 9l6 6 6-6"
-                          stroke="currentColor"
-                          strokeWidth="2.2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </div>
-                  </div>
-                </summary>
-
-                <div className="lf-px-acc__body">
+              <div className="lf-px-body">
+                <div className="lf-px-collapse">
                   <div className="lf-px-topRow">
-                    <div className="lf-px-lastFired">
-                      <span className="lf-muted">
-                        Last fired:{" "}
-                        {p?.lastFiredAt
-                          ? new Date(p.lastFiredAt).toLocaleString()
-                          : "—"}
-                      </span>
-                    </div>
+                    <span className="lf-muted">
+                      Last fired:{" "}
+                      {p?.lastFiredAt ? new Date(p.lastFiredAt).toLocaleString() : "—"}
+                    </span>
 
                     <Form method="post">
                       <input type="hidden" name="intent" value="delete" />
                       <input type="hidden" name="platform" value={pl} />
                       <button
-                        className="lf-btn lf-btn--ghost lf-px-remove"
+                        className="lf-btn lf-btn--ghost"
                         type="submit"
                         disabled={!p}
                         title="Remove config"
@@ -315,15 +705,13 @@ export default function PixelsRoute() {
                           name="pixelId"
                           defaultValue={p?.pixelId ?? ""}
                           placeholder={
-                            pl === "facebook"
-                              ? "1234567890"
-                              : "Pixel / Measurement ID"
+                            pl === "facebook" ? "1234567890" : "Pixel / Measurement ID"
                           }
                         />
                       </label>
 
                       <div className="lf-px-toggles">
-                        <label className="lf-check lf-px-check">
+                        <label className="lf-px-check">
                           <input
                             type="checkbox"
                             name="enabled"
@@ -332,7 +720,7 @@ export default function PixelsRoute() {
                           <span>Enabled</span>
                         </label>
 
-                        <label className="lf-check lf-px-check">
+                        <label className="lf-px-check">
                           <input
                             type="checkbox"
                             name="apiEnabled"
@@ -403,7 +791,14 @@ export default function PixelsRoute() {
                     </div>
                   </div>
                 </div>
-              </details>
+
+                {/* When closed, keep a small “preview” line so the card doesn’t look empty */}
+                {!isOpen ? (
+                  <div className="lf-muted" style={{ padding: "8px 2px 10px" }}>
+                    Click to configure {platformLabel(pl)} events and test firing.
+                  </div>
+                ) : null}
+              </div>
             </div>
           );
         })}
@@ -432,14 +827,12 @@ export default function PixelsRoute() {
                   </td>
                   <td>
                     <span className={`lf-px-dot lf-px-dot--${l.platform}`} />
-                    {displayPlatformName(String(l.platform))}
+                    {platformLabel(String(l.platform))}
                   </td>
                   <td>{l.event}</td>
                   <td>
                     <span
-                      className={`lf-px-status ${
-                        l.status === "success" ? "ok" : "bad"
-                      }`}
+                      className={`lf-px-status ${l.status === "success" ? "ok" : "bad"}`}
                     >
                       {l.status}
                     </span>
