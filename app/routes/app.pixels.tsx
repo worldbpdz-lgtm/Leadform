@@ -161,40 +161,24 @@ export async function action({ request }: ActionFunctionArgs) {
 
 /** Inline brand-ish logos (simple, clean, colored via currentColor) */
 function PlatformIcon({ platform }: { platform: PixelPlatform }) {
-  if (platform === "facebook") {
-    // Meta loop (stylized)
-    return (
-      <svg viewBox="0 0 24 24" className="lf-px-logo" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M7.1 6.6c-1.9 0-3.4 1.8-3.4 4.3 0 4.2 2.7 9.6 5 9.6 1.2 0 2.4-2.1 3.5-4.1l.8-1.4.8 1.4c1.1 2 2.3 4.1 3.5 4.1 2.3 0 5-5.4 5-9.6 0-2.5-1.5-4.3-3.4-4.3-2.2 0-4 2.4-6 6-2-3.6-3.8-6-6-6zm0 2c1 0 2.5 1.6 4.5 5.4l-1.2 2.2c-.9 1.7-2 3.7-2.3 3.7-.9 0-3.2-3.6-3.2-7.6 0-1.5.7-2.3 1.7-2.3zm9.8 0c1 0 1.7.8 1.7 2.3 0 4-2.3 7.6-3.2 7.6-.3 0-1.4-2-2.3-3.7l-1.2-2.2c2-3.8 3.5-5.4 4.5-5.4z"
-        />
-      </svg>
-    );
-  }
+  const src =
+    platform === "facebook"
+      ? "/brands/meta.png"
+      : platform === "tiktok"
+      ? "/brands/tiktok.svg"
+      : "/brands/google.svg";
 
-  if (platform === "tiktok") {
-    // TikTok note (simple)
-    return (
-      <svg viewBox="0 0 24 24" className="lf-px-logo" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M14 3v10.2a3.8 3.8 0 1 1-3.4-3.8v3a.8.8 0 0 0-.8.8 1.4 1.4 0 1 0 2.8 0V3h3.6c.4 2.6 2 4.3 4.8 4.6v3.1c-2.6-.1-4.6-1.2-6-2.8V19a5 5 0 1 1-5-5c.6 0 1.1.1 1.6.2V11a8 8 0 1 0 8 8V3h-3.6z"
-        />
-      </svg>
-    );
-  }
-
-  // Google "G" (mono, premium)
   return (
-    <svg viewBox="0 0 24 24" className="lf-px-logo" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M12 10.2v3.7h5.2c-.3 1.8-2 3.7-5.2 3.7-3.1 0-5.6-2.6-5.6-5.8S8.9 6 12 6c1.8 0 3 .8 3.7 1.5l2.5-2.4C16.7 3.7 14.6 2.6 12 2.6 7 2.6 3 6.7 3 11.8S7 21 12 21c5.2 0 8.6-3.7 8.6-8.9 0-.6-.1-1-.2-1.9H12z"
-      />
-    </svg>
+    <img
+      src={src}
+      alt=""
+      className="lf-px-logoImg"
+      loading="lazy"
+      decoding="async"
+    />
   );
 }
+
 
 function PlatformMeta(pl: PixelPlatform) {
   if (pl === "facebook") {

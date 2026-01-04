@@ -988,260 +988,155 @@ s-text-field:focus-within {
 }
 
 /* =========================
-   Pixels (Premium UI)
-   Scoped to .lf-px
+   Pixels (Premium UI v2)
+   Scoped to .lf-px only
    ========================= */
 
 .lf-px {
-  padding: 18px 18px 28px;
-  background: radial-gradient(1200px 400px at 10% 0%, rgba(99,102,241,.10), transparent 60%),
-              radial-gradient(1200px 400px at 90% 0%, rgba(16,185,129,.10), transparent 60%);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+  color: rgba(15, 23, 42, 0.92);
+  background:
+    radial-gradient(1100px 420px at 8% 2%, rgba(99,102,241,.20), transparent 55%),
+    radial-gradient(1000px 380px at 92% 6%, rgba(16,185,129,.18), transparent 55%),
+    radial-gradient(900px 360px at 50% 0%, rgba(14,165,233,.14), transparent 60%),
+    linear-gradient(180deg, rgba(248,250,252,.85), rgba(241,245,249,.65));
 }
 
+.lf-px .lf-card__title,
+.lf-px .lf-px-card__title {
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.lf-px .lf-muted {
+  color: rgba(15, 23, 42, 0.62);
+}
+
+/* Hero gets more “premium” presence */
 .lf-px__hero {
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.75));
-  backdrop-filter: blur(6px);
-  margin-bottom: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.74));
+  box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
 }
 
-.lf-px__heroRow {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: center;
-}
-
-.lf-px__heroPill {
-  font-size: 12px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(99, 102, 241, 0.10);
-  border: 1px solid rgba(99, 102, 241, 0.25);
-  color: rgba(15, 23, 42, 0.9);
-}
-
-.lf-px__grid {
-  display: grid;
-  gap: 12px;
-}
-
-@media (min-width: 1020px) {
-  .lf-px__grid {
-    grid-template-columns: 1fr 1fr;
-    align-items: start;
-  }
-}
-
+/* Card background + deeper shadows */
 .lf-px-card {
   border: 1px solid rgba(15, 23, 42, 0.10);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
-  overflow: hidden;
-  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.70));
+  box-shadow:
+    0 18px 60px rgba(15, 23, 42, 0.10),
+    0 1px 0 rgba(255,255,255,.85) inset;
 }
 
-.lf-px-card::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 4px;
-  width: 100%;
-  opacity: .9;
+/* Platform-tinted glow (subtle but noticeable) */
+.lf-px-card--meta {
+  box-shadow:
+    0 18px 60px rgba(37, 99, 235, 0.10),
+    0 18px 60px rgba(124, 58, 237, 0.08),
+    0 1px 0 rgba(255,255,255,.85) inset;
+}
+.lf-px-card--tiktok {
+  box-shadow:
+    0 18px 60px rgba(6, 182, 212, 0.10),
+    0 18px 60px rgba(17, 24, 39, 0.08),
+    0 1px 0 rgba(255,255,255,.85) inset;
+}
+.lf-px-card--google {
+  box-shadow:
+    0 18px 60px rgba(29, 78, 216, 0.10),
+    0 18px 60px rgba(34, 197, 94, 0.08),
+    0 1px 0 rgba(255,255,255,.85) inset;
 }
 
-.lf-px-card--meta::before {
-  background: linear-gradient(90deg, #2563eb, #7c3aed);
-}
-.lf-px-card--tiktok::before {
-  background: linear-gradient(90deg, #111827, #06b6d4);
-}
-.lf-px-card--google::before {
-  background: linear-gradient(90deg, #1d4ed8, #22c55e);
-}
-
-.lf-px-card__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 14px 10px;
-  background: linear-gradient(180deg, rgba(255,255,255,.95), rgba(255,255,255,.75));
-}
-
-.lf-px-card__brand {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.lf-px-card__title {
-  font-weight: 650;
-  letter-spacing: -0.01em;
-}
-
-.lf-px-card__right {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.lf-px-remove {
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 10px;
-}
-
-.lf-px-chips {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.lf-px-chip {
-  font-size: 12px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.14);
-  background: rgba(255,255,255,.7);
-  color: rgba(15, 23, 42, 0.75);
-}
-
-.lf-px-chip.is-on {
-  border-color: rgba(16, 185, 129, 0.35);
-  background: rgba(16, 185, 129, 0.12);
-  color: rgba(15, 23, 42, 0.9);
-}
-
+/* Make badge feel like an app icon */
 .lf-px-badge {
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 16px;
+  background: rgba(255,255,255,.92);
   border: 1px solid rgba(15, 23, 42, 0.10);
-  background: rgba(255,255,255,.8);
-  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.10);
 }
 
-.lf-px-logo {
-  width: 20px;
-  height: 20px;
+/* Real logo images */
+.lf-px-logoImg {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
   display: block;
 }
 
-.lf-px-badge--meta { color: #2563eb; }
-.lf-px-badge--tiktok { color: #111827; }
-.lf-px-badge--google { color: #1d4ed8; }
-
-.lf-px-form {
-  padding: 12px 14px 12px;
+/* Chips more premium */
+.lf-px-chip {
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255,255,255,.72);
+}
+.lf-px-chip.is-on {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.40);
 }
 
-.lf-px-form__grid {
-  display: grid;
-  gap: 12px;
+/* Inputs */
+.lf-px .lf-input {
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255,255,255,.86);
+}
+.lf-px .lf-input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.14);
 }
 
-.lf-px-field .lf-input {
-  border-radius: 12px;
-}
-
-.lf-px-toggles {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding: 2px 0 0;
-}
-
-.lf-px-check input {
-  transform: translateY(1px);
-}
-
-.lf-px-eventsWrap {
-  margin-top: 2px;
-}
-
-.lf-px-events {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-/* checkbox as premium pill */
+/* Event pills: more color, more depth */
 .lf-px-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
   border-radius: 999px;
   border: 1px solid rgba(15, 23, 42, 0.14);
-  background: rgba(255,255,255,.65);
-  cursor: pointer;
-  user-select: none;
+  background: rgba(255,255,255,.78);
+  box-shadow: 0 10px 24px rgba(15,23,42,.06);
 }
-
 .lf-px-pill input {
-  width: 14px;
-  height: 14px;
+  accent-color: rgba(99, 102, 241, 0.95);
 }
 
-.lf-px-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 0 14px 14px;
-}
-
-.lf-px-footer__left {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.lf-px-save,
-.lf-px-test {
-  border-radius: 12px;
-  height: 38px;
+/* Buttons: premium primary + clean secondary */
+.lf-px .lf-btn {
+  border-radius: 14px;
+  height: 40px;
   padding: 0 14px;
+  font-weight: 700;
 }
 
+.lf-px .lf-px-save {
+  color: white;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: linear-gradient(90deg, rgba(99,102,241,.95), rgba(59,130,246,.95));
+  box-shadow: 0 14px 30px rgba(99,102,241,.22);
+}
+
+.lf-px .lf-px-save:hover {
+  filter: brightness(1.03);
+}
+
+.lf-px .lf-px-test {
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  background: rgba(255,255,255,.82);
+  box-shadow: 0 12px 26px rgba(15,23,42,.08);
+}
+
+/* Logs: nicer “data card” */
 .lf-px-logs {
-  margin-top: 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.74));
   border: 1px solid rgba(15, 23, 42, 0.10);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 16px 50px rgba(15, 23, 42, 0.08);
 }
 
-.lf-px-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  display: inline-block;
-  margin-right: 8px;
-  transform: translateY(-1px);
-}
-
-.lf-px-dot--facebook { background: #2563eb; }
-.lf-px-dot--tiktok { background: #111827; }
-.lf-px-dot--google { background: #1d4ed8; }
-
-.lf-px-status {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.14);
-}
-
-.lf-px-status.ok {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.35);
-}
-
-.lf-px-status.bad {
-  background: rgba(239, 68, 68, 0.10);
-  border-color: rgba(239, 68, 68, 0.30);
+.lf-px-table thead th {
+  font-weight: 750;
+  color: rgba(15, 23, 42, 0.65);
 }
