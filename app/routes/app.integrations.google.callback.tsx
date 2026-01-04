@@ -3,7 +3,6 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { redirect } from "react-router";
 
 import { prisma } from "~/db.server";
-import { authenticate } from "~/shopify.server";
 import { encryptString, getGoogleOAuthClient, verifyState } from "~/lib/google.server";
 
 export const headers: HeadersFunction = () => ({
@@ -26,8 +25,6 @@ function redirectWithParams(returnTo: string, params: Record<string, string>) {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const stateRaw = url.searchParams.get("state");
@@ -61,20 +58,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return redirectWithParams(returnTo, { google: "error", reason: `state_${st.reason}` });
   }
 
-  // Bind state to the same shop as the Shopify session
-  if (st.shopDomain !== session.shop) {
-    return redirectWithParams(returnTo, { google: "error", reason: "shop_mismatch" });
-  }
+  // IMPORTANT: do NOT require authenticate.admin() here.
+  // This callback is hit by Google (top-level), often without Shopify embedded session cookies.
+  const shopDomain = st.shopDomain;
 
   const shop = await prisma.shop.upsert({
-    where: { shopDomain: session.shop },
+    where: { shopDomain },
     update: { uninstalledAt: null },
-    create: { shopDomain: session.shop, installedAt: new Date() },
+    create: { shopDomain, installedAt: new Date() },
     select: { id: true },
   });
 
   const oauth = getGoogleOAuthClient();
-
   const tokenRes = await oauth.getToken(code);
   const tokens = tokenRes.tokens;
 

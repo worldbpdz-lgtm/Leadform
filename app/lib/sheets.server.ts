@@ -9,8 +9,14 @@ import { decryptString, encryptString, getGoogleOAuthClient } from "~/lib/google
  * - Premium formatting (headers, banding, filters, dropdown status, conditional colors)
  * - DB -> Sheet upsert per request
  * - Sheet -> DB sync (status/email/phone/address)
- * - Full export (rebuild) with optional Shopify Admin GraphQL enrichment (title/handle/image + primary domain)
+ * - Full export (rebuild) with optional Shopify Admin GraphQL enrichment
  * - Delete & replace primary sheet (Drive delete best-effort)
+ *
+ * Hardening:
+ * - Safer token refresh + explicit "google_reconnect_required"
+ * - Deterministic formatting (robust sheetId resolution)
+ * - Avoid crashes by surfacing actionable errors instead of throwing Google raw failures
+ * - Avoid filter conflicts (clear existing basic filter before re-setting)
  */
 
 type GoogleAuthForShop = {
@@ -25,26 +31,26 @@ export type ShopifyAdminClient = {
 const REQUESTS_SHEET_NAME = "Requests";
 
 /**
- * Premium, organized columns A..R
+ * Premium, organized columns A..R (18 columns)
  */
 const HEADERS = [
-  "Request ID", // A (locked-ish)
-  "Status", // B (editable dropdown)
+  "Request ID", // A
+  "Status", // B
   "Created At", // C
   "Role", // D
   "Customer", // E
-  "Email", // F (editable)
-  "Phone", // G (editable)
+  "Email", // F
+  "Phone", // G
   "Wilaya", // H
   "Commune", // I
-  "Address", // J (editable)
+  "Address", // J
   "Items", // K
   "Product", // L
   "Qty", // M
-  "Product URL", // N (hyperlink)
+  "Product URL", // N
   "Product Image", // O (formula)
   "Product Image URL", // P (raw url)
-  "Admin Link", // Q (hyperlink)
+  "Admin Link", // Q
   "Last Sync", // R
 ] as const;
 
@@ -71,6 +77,56 @@ function asShopifyGid(kind: "Product" | "ProductVariant", idOrGid: string | null
   return null;
 }
 
+function normalizeGoogleError(e: any): string {
+  const msg = String(e?.message || "");
+  const status = e?.code ? String(e.code) : "";
+  const reason =
+    e?.response?.data?.error?.toString?.() ||
+    e?.response?.data?.error?.message ||
+    e?.errors?.[0]?.reason ||
+    "";
+
+  const combined = [msg, status, reason].filter(Boolean).join(" | ");
+  return combined || "google_error";
+}
+
+function isInvalidGrant(e: any) {
+  const m = normalizeGoogleError(e).toLowerCase();
+  return m.includes("invalid_grant") || m.includes("invalid grant");
+}
+
+async function refreshAndPersistAccessToken(opts: { client: any; shopId: string }) {
+  const { client, shopId } = opts;
+
+  // No refresh token => cannot refresh reliably; force reconnect
+  const refreshToken = String(client.credentials?.refresh_token || "");
+  if (!refreshToken) {
+    throw new Error("google_reconnect_required");
+  }
+
+  try {
+    const before = String(client.credentials.access_token || "");
+    await client.getAccessToken();
+    const after = String(client.credentials.access_token || "");
+    const expiry = (client.credentials as any)?.expiry_date;
+
+    if (after && after !== before) {
+      await prisma.oAuthGoogle.update({
+        where: { shopId },
+        data: {
+          accessTokenEnc: encryptString(after),
+          ...(typeof expiry === "number" ? { expiresAt: new Date(expiry) } : {}),
+        },
+      });
+    }
+  } catch (e: any) {
+    if (isInvalidGrant(e)) {
+      throw new Error("google_reconnect_required");
+    }
+    throw new Error(normalizeGoogleError(e));
+  }
+}
+
 async function getGoogleClientForShop(shopDomain: string): Promise<GoogleAuthForShop> {
   const shop = await prisma.shop.findUnique({
     where: { shopDomain },
@@ -80,7 +136,7 @@ async function getGoogleClientForShop(shopDomain: string): Promise<GoogleAuthFor
 
   const oauth = await prisma.oAuthGoogle.findUnique({
     where: { shopId: shop.id },
-    select: { accessTokenEnc: true, refreshTokenEnc: true, expiresAt: true },
+    select: { accessTokenEnc: true, refreshTokenEnc: true },
   });
   if (!oauth) throw new Error("google_not_connected");
 
@@ -94,21 +150,8 @@ async function getGoogleClientForShop(shopDomain: string): Promise<GoogleAuthFor
     refresh_token: refreshToken || undefined,
   });
 
-  // Force a refresh if needed; persist new access token + expiresAt when available.
-  const before = String(client.credentials.access_token || "");
-  await client.getAccessToken();
-  const after = String(client.credentials.access_token || "");
-  const expiry = (client.credentials as any)?.expiry_date;
-
-  if (after && after !== before) {
-    await prisma.oAuthGoogle.update({
-      where: { shopId: shop.id },
-      data: {
-        accessTokenEnc: encryptString(after),
-        ...(typeof expiry === "number" ? { expiresAt: new Date(expiry) } : {}),
-      },
-    });
-  }
+  // Force refresh if needed; persist any rotated access token.
+  await refreshAndPersistAccessToken({ client, shopId: shop.id });
 
   return { client, shopId: shop.id };
 }
@@ -155,8 +198,8 @@ async function getPrimaryConnection(shopId: string) {
     if (conn?.active) return conn;
   }
 
-  // fallback to latest active connection
-  const fallback = await prisma.sheetsConnection.findFirst({
+  // fallback: latest active
+  return prisma.sheetsConnection.findFirst({
     where: { shopId, active: true },
     orderBy: { updatedAt: "desc" },
     select: {
@@ -167,21 +210,12 @@ async function getPrimaryConnection(shopId: string) {
       active: true,
     },
   });
-
-  return fallback;
 }
 
 async function setPrimaryConnection(shopId: string, connectionId: string) {
-  // deterministic: only one active primary
   await prisma.$transaction([
-    prisma.sheetsConnection.updateMany({
-      where: { shopId },
-      data: { active: false },
-    }),
-    prisma.sheetsConnection.update({
-      where: { id: connectionId },
-      data: { active: true },
-    }),
+    prisma.sheetsConnection.updateMany({ where: { shopId }, data: { active: false } }),
+    prisma.sheetsConnection.update({ where: { id: connectionId }, data: { active: true } }),
     prisma.shopSettings.upsert({
       where: { shopId },
       update: { primarySheetsConnectionId: connectionId },
@@ -191,8 +225,7 @@ async function setPrimaryConnection(shopId: string, connectionId: string) {
 }
 
 /**
- * Unlink current primary sheet.
- * Does NOT delete the Google Sheet file (Drive file remains).
+ * Unlink current primary sheet (does NOT delete Drive file).
  */
 export async function unlinkPrimarySpreadsheet(shopDomain: string) {
   const shop = await prisma.shop.findUnique({
@@ -244,8 +277,18 @@ export async function createLeadformSpreadsheet(shopDomain: string) {
 
   const conn = await prisma.sheetsConnection.upsert({
     where: { shopId_spreadsheetId: { shopId, spreadsheetId } },
-    update: { active: true, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME },
-    create: { shopId, spreadsheetId, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME, active: true },
+    update: {
+      active: true,
+      spreadsheetName,
+      defaultSheetName: REQUESTS_SHEET_NAME,
+    },
+    create: {
+      shopId,
+      spreadsheetId,
+      spreadsheetName,
+      defaultSheetName: REQUESTS_SHEET_NAME,
+      active: true,
+    },
     select: { id: true, spreadsheetId: true },
   });
 
@@ -277,17 +320,12 @@ export async function deletePrimarySpreadsheetAndRecreate(shopDomain: string) {
       await drive.files.delete({ fileId: primary.spreadsheetId });
       deleted = true;
     } catch (e: any) {
-      deleteError = e?.message || "drive_delete_failed";
+      deleteError = normalizeGoogleError(e);
     }
   }
 
   const created = await createLeadformSpreadsheet(shopDomain);
-
-  return {
-    ...created,
-    deleted,
-    deleteError,
-  };
+  return { ...created, deleted, deleteError };
 }
 
 export async function linkExistingSpreadsheet(shopDomain: string, spreadsheetIdRaw: string) {
@@ -297,7 +335,6 @@ export async function linkExistingSpreadsheet(shopDomain: string, spreadsheetIdR
   const { client, shopId } = await getGoogleClientForShop(shopDomain);
   const sheets = sheetsApi(client);
 
-  // Ensure accessible + name
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
   const spreadsheetName = meta.data.properties?.title ?? null;
 
@@ -305,13 +342,22 @@ export async function linkExistingSpreadsheet(shopDomain: string, spreadsheetIdR
 
   const conn = await prisma.sheetsConnection.upsert({
     where: { shopId_spreadsheetId: { shopId, spreadsheetId } },
-    update: { active: true, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME },
-    create: { shopId, spreadsheetId, active: true, spreadsheetName, defaultSheetName: REQUESTS_SHEET_NAME },
+    update: {
+      active: true,
+      spreadsheetName,
+      defaultSheetName: REQUESTS_SHEET_NAME,
+    },
+    create: {
+      shopId,
+      spreadsheetId,
+      active: true,
+      spreadsheetName,
+      defaultSheetName: REQUESTS_SHEET_NAME,
+    },
     select: { id: true },
   });
 
   await setPrimaryConnection(shopId, conn.id);
-
   await exportRequestsToSpreadsheet({ shopDomain, spreadsheetId });
 
   return {
@@ -370,7 +416,6 @@ export async function syncRequestToPrimarySheet(shopDomain: string, requestId: s
       },
     });
   } catch (e: any) {
-    // Only write a failure log if we have a valid connectionId
     if (primary?.id) {
       await prisma.sheetsSyncLog
         .create({
@@ -378,7 +423,7 @@ export async function syncRequestToPrimarySheet(shopDomain: string, requestId: s
             connectionId: primary.id,
             requestId,
             status: "failed",
-            error: e?.message || "sync_failed",
+            error: normalizeGoogleError(e),
           },
         })
         .catch(() => {});
@@ -445,6 +490,7 @@ export async function exportRequestsToSpreadsheet(opts: {
   admin?: ShopifyAdminClient;
 }) {
   const { shopDomain, admin } = opts;
+
   const shop = await prisma.shop.findUnique({
     where: { shopDomain },
     select: { id: true },
@@ -454,9 +500,11 @@ export async function exportRequestsToSpreadsheet(opts: {
   const { client, shopId } = await getGoogleClientForShop(shopDomain);
   const sheets = sheetsApi(client);
 
-  const primary = opts.spreadsheetId ? { spreadsheetId: opts.spreadsheetId } : await getPrimaryConnection(shopId);
+  const primaryConn = opts.spreadsheetId
+    ? { spreadsheetId: opts.spreadsheetId }
+    : await getPrimaryConnection(shopId);
 
-  const spreadsheetId = (primary as any)?.spreadsheetId;
+  const spreadsheetId = (primaryConn as any)?.spreadsheetId;
   if (!spreadsheetId) throw new Error("no_sheet");
 
   await ensureRequestsSheetFormatted(sheets, spreadsheetId);
@@ -535,6 +583,7 @@ export async function exportRequestsToSpreadsheet(opts: {
     range: `${REQUESTS_SHEET_NAME}!A2:R`,
   });
 
+  // Keep order oldest -> newest in sheet
   const rows = reqs
     .slice()
     .reverse()
@@ -557,21 +606,40 @@ export async function exportRequestsToSpreadsheet(opts: {
 }
 
 async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) {
-  const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const found = meta.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME);
-  const sheetId: number | null = found?.properties?.sheetId ?? null;
+  // Include basicFilter so we can safely clear it only when present
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields:
+      "sheets.properties,sheets.bandedRanges,sheets.conditionalFormats,sheets.basicFilter",
+  });
 
-  if (sheetId === null) {
+  const found =
+    meta.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME) ?? null;
+
+  let sheetId: number | null = found?.properties?.sheetId ?? null;
+
+  if (sheetId == null) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: { requests: [{ addSheet: { properties: { title: REQUESTS_SHEET_NAME } } }] },
     });
+
+    const meta2 = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties",
+    });
+
+    const created =
+      meta2.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME) ?? null;
+
+    sheetId = created?.properties?.sheetId ?? null;
   }
 
-  const meta2 = sheetId === null ? await sheets.spreadsheets.get({ spreadsheetId }) : meta;
-  const sheet = meta2.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME) ?? null;
-  const sid = sheet?.properties?.sheetId ?? 0;
+  if (sheetId == null) {
+    throw new Error("requests_sheet_missing_sheetId");
+  }
 
+  // Header row
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `${REQUESTS_SHEET_NAME}!A1:R1`,
@@ -579,46 +647,76 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     requestBody: { values: [Array.from(HEADERS)] },
   });
 
-  const requests: any[] = [];
+  // Re-fetch for cleanup (banding + conditional rules + filter state)
+  const meta3 = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields:
+      "sheets.properties,sheets.bandedRanges,sheets.conditionalFormats,sheets.basicFilter",
+  });
+
+  const sheet =
+    meta3.data.sheets?.find((s: any) => s.properties?.title === REQUESTS_SHEET_NAME) ?? null;
 
   const bandedRanges = (sheet as any)?.bandedRanges ?? [];
+  const conditionalFormats = (sheet as any)?.conditionalFormats ?? [];
+  const hasBasicFilter = Boolean((sheet as any)?.basicFilter);
+
+  const requests: any[] = [];
+
   for (const br of bandedRanges) {
     if (br?.bandedRangeId != null) {
       requests.push({ deleteBanding: { bandedRangeId: br.bandedRangeId } });
     }
   }
 
-  const conditional = (sheet as any)?.conditionalFormats ?? [];
-  for (let i = conditional.length - 1; i >= 0; i--) {
-    requests.push({ deleteConditionalFormatRule: { sheetId: sid, index: i } });
+  for (let i = conditionalFormats.length - 1; i >= 0; i--) {
+    requests.push({ deleteConditionalFormatRule: { sheetId, index: i } });
   }
 
+  // Avoid "filter already exists" conflicts
+  if (hasBasicFilter) {
+    requests.push({ clearBasicFilter: { sheetId } });
+  }
+
+  // Freeze row 1
   requests.push({
     updateSheetProperties: {
-      properties: { sheetId: sid, gridProperties: { frozenRowCount: 1 } },
+      properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
       fields: "gridProperties.frozenRowCount",
     },
   });
 
+  // Header styling
   requests.push({
     repeatCell: {
-      range: { sheetId: sid, startRowIndex: 0, endRowIndex: 1 },
+      range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
       cell: {
         userEnteredFormat: {
           backgroundColor: { red: 0.10, green: 0.12, blue: 0.18 },
           horizontalAlignment: "CENTER",
           verticalAlignment: "MIDDLE",
-          textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true, fontSize: 10 },
+          textFormat: {
+            foregroundColor: { red: 1, green: 1, blue: 1 },
+            bold: true,
+            fontSize: 10,
+          },
         },
       },
-      fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+      fields:
+        "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
     },
   });
 
+  // Banding + filter
   requests.push({
     addBanding: {
       bandedRange: {
-        range: { sheetId: sid, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 18 },
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          startColumnIndex: 0,
+          endColumnIndex: 18,
+        },
         rowProperties: {
           firstBandColor: { red: 0.98, green: 0.98, blue: 0.99 },
           secondBandColor: { red: 1, green: 1, blue: 1 },
@@ -631,14 +729,20 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
   requests.push({
     setBasicFilter: {
       filter: {
-        range: { sheetId: sid, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 18 },
+        range: {
+          sheetId,
+          startRowIndex: 0,
+          startColumnIndex: 0,
+          endColumnIndex: 18,
+        },
       },
     },
   });
 
+  // Status dropdown validation (Column B, from row 2 down)
   requests.push({
     setDataValidation: {
-      range: { sheetId: sid, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+      range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
       rule: {
         condition: {
           type: "ONE_OF_LIST",
@@ -650,69 +754,38 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
     },
   });
 
-  const statusRange = { sheetId: sid, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 };
+  const statusRange = {
+    sheetId,
+    startRowIndex: 1,
+    startColumnIndex: 1,
+    endColumnIndex: 2,
+  };
 
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "confirmed" }] },
-          format: { backgroundColor: { red: 0.86, green: 0.97, blue: 0.90 } },
+  // Conditional formatting by status (adds a couple more without removing yours)
+  const addStatusRule = (value: string, rgb: { red: number; green: number; blue: number }) => {
+    requests.push({
+      addConditionalFormatRule: {
+        rule: {
+          ranges: [statusRange],
+          booleanRule: {
+            condition: { type: "TEXT_EQ", values: [{ userEnteredValue: value }] },
+            format: { backgroundColor: rgb },
+          },
         },
+        index: 0,
       },
-      index: 0,
-    },
-  });
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "cancelled" }] },
-          format: { backgroundColor: { red: 0.99, green: 0.90, blue: 0.90 } },
-        },
-      },
-      index: 0,
-    },
-  });
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "received" }] },
-          format: { backgroundColor: { red: 0.99, green: 0.95, blue: 0.87 } },
-        },
-      },
-      index: 0,
-    },
-  });
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "spam" }] },
-          format: { backgroundColor: { red: 0.93, green: 0.93, blue: 0.93 } },
-        },
-      },
-      index: 0,
-    },
-  });
-  requests.push({
-    addConditionalFormatRule: {
-      rule: {
-        ranges: [statusRange],
-        booleanRule: {
-          condition: { type: "TEXT_EQ", values: [{ userEnteredValue: "archived" }] },
-          format: { backgroundColor: { red: 0.95, green: 0.95, blue: 0.95 } },
-        },
-      },
-      index: 0,
-    },
-  });
+    });
+  };
 
+  addStatusRule("confirmed", { red: 0.86, green: 0.97, blue: 0.90 });
+  addStatusRule("in_review", { red: 0.90, green: 0.94, blue: 0.99 });
+  addStatusRule("contacted", { red: 0.93, green: 0.97, blue: 0.99 });
+  addStatusRule("received", { red: 0.99, green: 0.95, blue: 0.87 });
+  addStatusRule("cancelled", { red: 0.99, green: 0.90, blue: 0.90 });
+  addStatusRule("spam", { red: 0.93, green: 0.93, blue: 0.93 });
+  addStatusRule("archived", { red: 0.95, green: 0.95, blue: 0.95 });
+
+  // Column widths (A..R)
   const colWidths = [
     210, 120, 170, 110, 220, 220, 160, 160, 160, 260, 90, 240, 70, 260, 140, 260, 240, 170,
   ];
@@ -720,7 +793,7 @@ async function ensureRequestsSheetFormatted(sheets: any, spreadsheetId: string) 
   for (let i = 0; i < colWidths.length; i++) {
     requests.push({
       updateDimensionProperties: {
-        range: { sheetId: sid, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 },
+        range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 },
         properties: { pixelSize: colWidths[i] },
         fields: "pixelSize",
       },
@@ -793,11 +866,16 @@ function buildSheetRowValues(
   const adminLink = adminUrl ? `=HYPERLINK("${adminUrl}", "Open")` : "";
   const productLink = productUrl ? `=HYPERLINK("${productUrl}", "Open")` : "";
 
+  // Uses column P (Product Image URL) and renders an 80x80 image
   const imageFormula = `=IF(LEN(INDIRECT("P"&ROW())),IMAGE(INDIRECT("P"&ROW()),4,80,80),"")`;
 
   const itemsSummary = Array.isArray(r.items) && r.items.length ? String(r.items.length) : "0";
 
-  const w = r.wilaya?.nameFr ?? r.wilaya?.nameAr ?? (r.wilayaCode ? String(r.wilayaCode) : "");
+  const w =
+    r.wilaya?.nameFr ??
+    r.wilaya?.nameAr ??
+    (r.wilayaCode ? String(r.wilayaCode) : "");
+
   const c = r.commune?.nameFr ?? r.commune?.nameAr ?? "";
 
   return [
