@@ -986,3 +986,262 @@ s-text-field:focus-within {
   flex-wrap: wrap;
   margin-top: 8px;
 }
+
+/* =========================
+   Pixels (Premium UI)
+   Scoped to .lf-px
+   ========================= */
+
+.lf-px {
+  padding: 18px 18px 28px;
+  background: radial-gradient(1200px 400px at 10% 0%, rgba(99,102,241,.10), transparent 60%),
+              radial-gradient(1200px 400px at 90% 0%, rgba(16,185,129,.10), transparent 60%);
+}
+
+.lf-px__hero {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.75));
+  backdrop-filter: blur(6px);
+  margin-bottom: 14px;
+}
+
+.lf-px__heroRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+}
+
+.lf-px__heroPill {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.10);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.lf-px__grid {
+  display: grid;
+  gap: 12px;
+}
+
+@media (min-width: 1020px) {
+  .lf-px__grid {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.lf-px-card {
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+  position: relative;
+}
+
+.lf-px-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 4px;
+  width: 100%;
+  opacity: .9;
+}
+
+.lf-px-card--meta::before {
+  background: linear-gradient(90deg, #2563eb, #7c3aed);
+}
+.lf-px-card--tiktok::before {
+  background: linear-gradient(90deg, #111827, #06b6d4);
+}
+.lf-px-card--google::before {
+  background: linear-gradient(90deg, #1d4ed8, #22c55e);
+}
+
+.lf-px-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 14px 10px;
+  background: linear-gradient(180deg, rgba(255,255,255,.95), rgba(255,255,255,.75));
+}
+
+.lf-px-card__brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.lf-px-card__title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.lf-px-card__right {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.lf-px-remove {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+}
+
+.lf-px-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lf-px-chip {
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255,255,255,.7);
+  color: rgba(15, 23, 42, 0.75);
+}
+
+.lf-px-chip.is-on {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.12);
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.lf-px-badge {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: rgba(255,255,255,.8);
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06);
+}
+
+.lf-px-logo {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.lf-px-badge--meta { color: #2563eb; }
+.lf-px-badge--tiktok { color: #111827; }
+.lf-px-badge--google { color: #1d4ed8; }
+
+.lf-px-form {
+  padding: 12px 14px 12px;
+}
+
+.lf-px-form__grid {
+  display: grid;
+  gap: 12px;
+}
+
+.lf-px-field .lf-input {
+  border-radius: 12px;
+}
+
+.lf-px-toggles {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 2px 0 0;
+}
+
+.lf-px-check input {
+  transform: translateY(1px);
+}
+
+.lf-px-eventsWrap {
+  margin-top: 2px;
+}
+
+.lf-px-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* checkbox as premium pill */
+.lf-px-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255,255,255,.65);
+  cursor: pointer;
+  user-select: none;
+}
+
+.lf-px-pill input {
+  width: 14px;
+  height: 14px;
+}
+
+.lf-px-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.lf-px-footer__left {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lf-px-save,
+.lf-px-test {
+  border-radius: 12px;
+  height: 38px;
+  padding: 0 14px;
+}
+
+.lf-px-logs {
+  margin-top: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+}
+
+.lf-px-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 8px;
+  transform: translateY(-1px);
+}
+
+.lf-px-dot--facebook { background: #2563eb; }
+.lf-px-dot--tiktok { background: #111827; }
+.lf-px-dot--google { background: #1d4ed8; }
+
+.lf-px-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+}
+
+.lf-px-status.ok {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.lf-px-status.bad {
+  background: rgba(239, 68, 68, 0.10);
+  border-color: rgba(239, 68, 68, 0.30);
+}

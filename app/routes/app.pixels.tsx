@@ -89,7 +89,10 @@ export async function action({ request }: ActionFunctionArgs) {
       const platform = asPlatform(fd.get("platform"));
       const pixelId = String(fd.get("pixelId") || "").trim();
       if (!pixelId)
-        return json({ ok: false, error: "Pixel ID is required." }, { status: 400 });
+        return json(
+          { ok: false, error: "Pixel ID is required." },
+          { status: 400 }
+        );
 
       const enabled = parseBool(fd.get("enabled"));
       const apiEnabled = parseBool(fd.get("apiEnabled"));
@@ -122,7 +125,6 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     if (intent === "test") {
-      // This fires against all enabled pixels (based on your DB).
       await firePixelsForRequest({
         shopId: shop.id,
         event: "request_submitted",
@@ -150,18 +152,73 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({ ok: false, error: "Unknown intent" }, { status: 400 });
   } catch (e: any) {
-    return json({ ok: false, error: e?.message ?? "Action failed" }, { status: 500 });
+    return json(
+      { ok: false, error: e?.message ?? "Action failed" },
+      { status: 500 }
+    );
   }
+}
+
+/** Inline brand-ish logos (simple, clean, colored via currentColor) */
+function PlatformIcon({ platform }: { platform: PixelPlatform }) {
+  if (platform === "facebook") {
+    // Meta loop (stylized)
+    return (
+      <svg viewBox="0 0 24 24" className="lf-px-logo" aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M7.1 6.6c-1.9 0-3.4 1.8-3.4 4.3 0 4.2 2.7 9.6 5 9.6 1.2 0 2.4-2.1 3.5-4.1l.8-1.4.8 1.4c1.1 2 2.3 4.1 3.5 4.1 2.3 0 5-5.4 5-9.6 0-2.5-1.5-4.3-3.4-4.3-2.2 0-4 2.4-6 6-2-3.6-3.8-6-6-6zm0 2c1 0 2.5 1.6 4.5 5.4l-1.2 2.2c-.9 1.7-2 3.7-2.3 3.7-.9 0-3.2-3.6-3.2-7.6 0-1.5.7-2.3 1.7-2.3zm9.8 0c1 0 1.7.8 1.7 2.3 0 4-2.3 7.6-3.2 7.6-.3 0-1.4-2-2.3-3.7l-1.2-2.2c2-3.8 3.5-5.4 4.5-5.4z"
+        />
+      </svg>
+    );
+  }
+
+  if (platform === "tiktok") {
+    // TikTok note (simple)
+    return (
+      <svg viewBox="0 0 24 24" className="lf-px-logo" aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M14 3v10.2a3.8 3.8 0 1 1-3.4-3.8v3a.8.8 0 0 0-.8.8 1.4 1.4 0 1 0 2.8 0V3h3.6c.4 2.6 2 4.3 4.8 4.6v3.1c-2.6-.1-4.6-1.2-6-2.8V19a5 5 0 1 1-5-5c.6 0 1.1.1 1.6.2V11a8 8 0 1 0 8 8V3h-3.6z"
+        />
+      </svg>
+    );
+  }
+
+  // Google "G" (mono, premium)
+  return (
+    <svg viewBox="0 0 24 24" className="lf-px-logo" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 10.2v3.7h5.2c-.3 1.8-2 3.7-5.2 3.7-3.1 0-5.6-2.6-5.6-5.8S8.9 6 12 6c1.8 0 3 .8 3.7 1.5l2.5-2.4C16.7 3.7 14.6 2.6 12 2.6 7 2.6 3 6.7 3 11.8S7 21 12 21c5.2 0 8.6-3.7 8.6-8.9 0-.6-.1-1-.2-1.9H12z"
+      />
+    </svg>
+  );
 }
 
 function PlatformMeta(pl: PixelPlatform) {
   if (pl === "facebook") {
-    return { title: "Meta (Facebook/Instagram)", hint: "Server-side supported (CAPI)." };
+    return {
+      title: "Meta (Facebook / Instagram)",
+      hint: "Server-side supported (CAPI).",
+      cls: "lf-px-card--meta",
+      color: "meta",
+    };
   }
   if (pl === "tiktok") {
-    return { title: "TikTok Pixel", hint: "Config + logs ready; server API wiring later." };
+    return {
+      title: "TikTok Pixel",
+      hint: "Config + logs ready (server wiring later).",
+      cls: "lf-px-card--tiktok",
+      color: "tiktok",
+    };
   }
-  return { title: "Google (Gtag/GA4)", hint: "Config + logs ready; server API wiring later." };
+  return {
+    title: "Google (Gtag / GA4)",
+    hint: "Config + logs ready (server wiring later).",
+    cls: "lf-px-card--google",
+    color: "google",
+  };
 }
 
 export default function PixelsRoute() {
@@ -169,17 +226,24 @@ export default function PixelsRoute() {
   const actionData = useActionData() as any;
 
   const byPlatform = new Map<string, any>();
-  for (const p of (data.pixels as any[])) byPlatform.set(p.platform, p);
+  for (const p of data.pixels as any[]) byPlatform.set(p.platform, p);
 
   const platforms: PixelPlatform[] = ["facebook", "tiktok", "google"];
 
   return (
-    <div className="lf-admin lf-pixels">
-      <div className="lf-card lf-pixels__header">
-        <div className="lf-card__title">Pixels</div>
-        <div className="lf-muted">
-          Configure platform IDs, select which events fire, and use “Test event” to verify.
+    <div className="lf-admin lf-px">
+      <div className="lf-card lf-px__hero">
+        <div className="lf-px__heroRow">
+          <div>
+            <div className="lf-card__title">Pixels</div>
+            <div className="lf-muted">
+              Configure IDs, select events, and test firing. Logs show the last 50
+              attempts.
+            </div>
+          </div>
+          <div className="lf-px__heroPill">Premium Tracking</div>
         </div>
+
         {actionData?.error ? (
           <div className="lf-alert lf-alert--danger" style={{ marginTop: 10 }}>
             {actionData.error}
@@ -187,127 +251,174 @@ export default function PixelsRoute() {
         ) : null}
       </div>
 
-      <div className="lf-pixels__grid">
+      <div className="lf-px__grid">
         {platforms.map((pl) => {
           const meta = PlatformMeta(pl);
           const p = byPlatform.get(pl);
           const ev = (p?.events ?? {}) as Record<string, boolean>;
 
+          const enabled = p ? !!p.enabled : false;
+          const apiEnabled = p ? !!p.apiEnabled : false;
+
+          const saveFormId = `px-save-${pl}`;
+          const testFormId = `px-test-${pl}`;
+
           return (
-            <div className="lf-card lf-pixel-card" key={pl}>
-              <div className="lf-pixel-card__top">
-                <div>
-                  <div className="lf-card__title">{meta.title}</div>
-                  <div className="lf-muted">{meta.hint}</div>
+            <div className={`lf-card lf-px-card ${meta.cls}`} key={pl}>
+              <div className="lf-px-card__header">
+                <div className="lf-px-card__brand">
+                  <span className={`lf-px-badge lf-px-badge--${meta.color}`}>
+                    <PlatformIcon platform={pl} />
+                  </span>
+                  <div>
+                    <div className="lf-px-card__title">{meta.title}</div>
+                    <div className="lf-muted">{meta.hint}</div>
+                  </div>
                 </div>
 
-                <div className="lf-pixel-card__topActions">
+                <div className="lf-px-card__right">
+                  <div className="lf-px-chips">
+                    <span className={`lf-px-chip ${enabled ? "is-on" : ""}`}>
+                      {enabled ? "Enabled" : "Disabled"}
+                    </span>
+                    <span className={`lf-px-chip ${apiEnabled ? "is-on" : ""}`}>
+                      {apiEnabled ? "Server API" : "Client only"}
+                    </span>
+                  </div>
+
                   <Form method="post">
                     <input type="hidden" name="intent" value="delete" />
                     <input type="hidden" name="platform" value={pl} />
-                    <button className="lf-btn lf-btn--ghost" type="submit" disabled={!p}>
+                    <button
+                      className="lf-btn lf-btn--ghost lf-px-remove"
+                      type="submit"
+                      disabled={!p}
+                      title="Remove config"
+                    >
                       Remove
                     </button>
                   </Form>
                 </div>
               </div>
 
-              <Form method="post" className="lf-pixel-form">
+              {/* SAVE FORM (no nested forms) */}
+              <Form method="post" id={saveFormId} className="lf-px-form">
                 <input type="hidden" name="intent" value="save" />
                 <input type="hidden" name="platform" value={pl} />
 
-                <div className="lf-pixel-form__cols">
-                  <div className="lf-pixel-form__left">
-                    <label className="lf-field">
-                      <div className="lf-label">Pixel ID</div>
+                <div className="lf-px-form__grid">
+                  <label className="lf-field lf-px-field">
+                    <div className="lf-label">Pixel ID</div>
+                    <input
+                      className="lf-input"
+                      name="pixelId"
+                      defaultValue={p?.pixelId ?? ""}
+                      placeholder={
+                        pl === "facebook"
+                          ? "1234567890"
+                          : "Pixel / Measurement ID"
+                      }
+                    />
+                  </label>
+
+                  <div className="lf-px-toggles">
+                    <label className="lf-check lf-px-check">
                       <input
-                        className="lf-input"
-                        name="pixelId"
-                        defaultValue={p?.pixelId ?? ""}
-                        placeholder={pl === "facebook" ? "1234567890" : "Pixel / Measurement ID"}
+                        type="checkbox"
+                        name="enabled"
+                        defaultChecked={p?.enabled ?? true}
                       />
+                      <span>Enabled</span>
                     </label>
 
-                    <div className="lf-pixel-form__checks">
-                      <label className="lf-check">
-                        <input type="checkbox" name="enabled" defaultChecked={p?.enabled ?? true} />
-                        <span>Enabled</span>
-                      </label>
-
-                      <label className="lf-check">
-                        <input type="checkbox" name="apiEnabled" defaultChecked={p?.apiEnabled ?? false} />
-                        <span>Server API enabled</span>
-                      </label>
-                    </div>
-
-                    <label className="lf-field">
-                      <div className="lf-label">Access token / API secret (optional)</div>
+                    <label className="lf-check lf-px-check">
                       <input
-                        className="lf-input"
-                        name="accessToken"
-                        placeholder="Leave empty to keep current token"
-                        autoComplete="off"
+                        type="checkbox"
+                        name="apiEnabled"
+                        defaultChecked={p?.apiEnabled ?? false}
                       />
-                      <div className="lf-muted">
-                        Stored encrypted. Only required for server-side events.
-                      </div>
-                    </label>
-
-                    <label className="lf-field">
-                      <div className="lf-label">Test code (optional)</div>
-                      <input className="lf-input" name="testCode" defaultValue={p?.testCode ?? ""} />
+                      <span>Server API enabled</span>
                     </label>
                   </div>
 
-                  <div className="lf-pixel-form__right">
+                  <label className="lf-field lf-px-field">
+                    <div className="lf-label">Access token / API secret</div>
+                    <input
+                      className="lf-input"
+                      name="accessToken"
+                      placeholder="Leave empty to keep current token"
+                      autoComplete="off"
+                    />
+                    <div className="lf-muted">
+                      Stored encrypted. Required only for Meta CAPI.
+                    </div>
+                  </label>
+
+                  <label className="lf-field lf-px-field">
+                    <div className="lf-label">Test code (optional)</div>
+                    <input
+                      className="lf-input"
+                      name="testCode"
+                      defaultValue={p?.testCode ?? ""}
+                    />
+                  </label>
+
+                  <div className="lf-px-eventsWrap">
                     <div className="lf-label">Events</div>
-                    <div className="lf-pixel-events">
+                    <div className="lf-px-events">
                       {data.events.map((e: string) => (
-                        <label className="lf-check lf-pixel-events__item" key={e}>
-                          <input type="checkbox" name={`ev_${e}`} defaultChecked={!!ev[e]} />
+                        <label className="lf-px-pill" key={e}>
+                          <input
+                            type="checkbox"
+                            name={`ev_${e}`}
+                            defaultChecked={!!ev[e]}
+                          />
                           <span>{e}</span>
                         </label>
                       ))}
                     </div>
-
-                    <div className="lf-pixel-actions">
-                      <button className="lf-btn" type="submit">
-                        Save
-                      </button>
-
-                      {/* NOT nested in the Save <Form> (fixes invalid HTML) */}
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="test" />
-                        <input type="hidden" name="platform" value={pl} />
-                        <button className="lf-btn lf-btn--secondary" type="submit">
-                          Test event
-                        </button>
-                      </Form>
-
-                      <div className="lf-muted lf-pixel-actions__right">
-                        Last fired:{" "}
-                        {p?.lastFiredAt ? new Date(p.lastFiredAt).toLocaleString() : "—"}
-                      </div>
-                    </div>
-
-                    <div className="lf-muted" style={{ marginTop: 8 }}>
-                      Tip: enable “Server API enabled” and set the token for Meta CAPI to get
-                      success logs. TikTok/Google server wiring can be added later.
-                    </div>
                   </div>
                 </div>
               </Form>
+
+              {/* TEST FORM (separate sibling form, NOT nested) */}
+              <Form method="post" id={testFormId} className="lf-px-testForm">
+                <input type="hidden" name="intent" value="test" />
+                <input type="hidden" name="platform" value={pl} />
+              </Form>
+
+              <div className="lf-px-footer">
+                <div className="lf-px-footer__left">
+                  <button className="lf-btn lf-px-save" type="submit" form={saveFormId}>
+                    Save
+                  </button>
+                  <button
+                    className="lf-btn lf-btn--secondary lf-px-test"
+                    type="submit"
+                    form={testFormId}
+                  >
+                    Test event
+                  </button>
+                </div>
+
+                <div className="lf-px-footer__right">
+                  <span className="lf-muted">
+                    Last fired:{" "}
+                    {p?.lastFiredAt ? new Date(p.lastFiredAt).toLocaleString() : "—"}
+                  </span>
+                </div>
+              </div>
             </div>
           );
         })}
       </div>
 
-      <div className="lf-card lf-pixels__logs">
+      <div className="lf-card lf-px-logs">
         <div className="lf-card__title">Pixel Event Logs</div>
         <div className="lf-muted">Last 50 attempts.</div>
 
         <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table className="lf-table">
+          <table className="lf-table lf-px-table">
             <thead>
               <tr>
                 <th style={{ whiteSpace: "nowrap" }}>Time</th>
@@ -323,9 +434,20 @@ export default function PixelsRoute() {
                   <td style={{ whiteSpace: "nowrap" }}>
                     {new Date(l.createdAt).toLocaleString()}
                   </td>
-                  <td>{l.platform}</td>
+                  <td>
+                    <span className={`lf-px-dot lf-px-dot--${l.platform}`} />
+                    {l.platform}
+                  </td>
                   <td>{l.event}</td>
-                  <td>{l.status}</td>
+                  <td>
+                    <span
+                      className={`lf-px-status ${
+                        l.status === "success" ? "ok" : "bad"
+                      }`}
+                    >
+                      {l.status}
+                    </span>
+                  </td>
                   <td className="lf-muted">{l.error ?? "—"}</td>
                 </tr>
               ))}
