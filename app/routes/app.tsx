@@ -45,8 +45,6 @@ export default function App() {
         <NavLink href="/app/roles" label="Roles" match="prefix" />
         <NavLink href="/app/integrations" label="Integrations" match="prefix" />
         <NavLink href="/app/pixels" label="Pixels" match="prefix" />
-        <NavLink href="/app/settings" label="Settings" match="prefix" />
-        <NavLink href="/app/billing" label="Billing" match="prefix" />
       </s-app-nav>
 
       <Outlet />

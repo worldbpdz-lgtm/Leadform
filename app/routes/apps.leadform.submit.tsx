@@ -10,6 +10,7 @@ import {
   validateUploadFile,
 } from "~/lib/uploads.server";
 import { syncRequestToPrimarySheet } from "~/lib/sheets.server";
+import { firePixelsForRequest } from "~/lib/pixels.server";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -128,10 +129,14 @@ function parseValues(input: unknown): Record<string, any> {
   if (typeof input === "string") {
     const s = input.trim();
     if (!s) return {};
-    if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
+    if (
+      (s.startsWith("{") && s.endsWith("}")) ||
+      (s.startsWith("[") && s.endsWith("]"))
+    ) {
       try {
         const parsed = JSON.parse(s);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as any;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+          return parsed as any;
       } catch {
         // ignore
       }
@@ -298,10 +303,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Enrich values with product info for Sheets (storefront can send these)
   const baseValues = parseValues((body as any).values);
-  const productTitle = stringOrNull(body.productTitle) || stringOrNull((baseValues as any)?.productTitle);
-  const productUrl = stringOrNull(body.productUrl) || stringOrNull((baseValues as any)?.productUrl);
+  const productTitle =
+    stringOrNull(body.productTitle) ||
+    stringOrNull((baseValues as any)?.productTitle);
+  const productUrl =
+    stringOrNull(body.productUrl) || stringOrNull((baseValues as any)?.productUrl);
   const productImageUrl =
-    stringOrNull(body.productImageUrl) || stringOrNull((baseValues as any)?.productImageUrl);
+    stringOrNull(body.productImageUrl) ||
+    stringOrNull((baseValues as any)?.productImageUrl);
 
   const values = {
     ...(baseValues || {}),
@@ -342,7 +351,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       items: { create: items as any },
     },
-    select: { id: true },
+    select: { id: true, createdAt: true },
   });
 
   if (files.length) {
@@ -389,6 +398,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return json({ ok: false, error: e?.message || "Upload failed" }, 500);
     }
   }
+
+  // Fire pixels (best-effort; never block customer)
+  firePixelsForRequest({
+    shopId: shop.id,
+    event: "request_submitted",
+    request: {
+      id: created.id,
+      email,
+      phone,
+      ip,
+      userAgent,
+      pageUrl,
+      referrer,
+      productId: primary.productId!,
+      qty: primary.qty,
+      createdAt: created.createdAt,
+      items: (items as any).map((it: any) => ({
+        productId: it.productId!,
+        qty: it.qty,
+      })),
+      currency: "DZD",
+      value: 0,
+    },
+  }).catch(() => {});
 
   // DB -> Sheet (best-effort; never block customer)
   syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});

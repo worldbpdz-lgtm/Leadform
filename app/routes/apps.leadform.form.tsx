@@ -88,6 +88,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     include: { requirements: { orderBy: { createdAt: "asc" } } },
   });
 
+  // Public pixel config for storefront (IDs only; no secrets)
+  const pixels = await prisma.trackingPixel.findMany({
+    where: { shopId: shop.id, enabled: true },
+    select: { platform: true, pixelId: true, events: true },
+    orderBy: { platform: "asc" },
+  });
+
   return json({
     ok: true,
     shop: shopDomain,
@@ -131,6 +138,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         acceptedMimeTypes: req.acceptedMimeTypes,
         maxSizeBytes: req.maxSizeBytes,
       })),
+    })),
+    pixels: pixels.map((p) => ({
+      platform: p.platform,
+      pixelId: p.pixelId,
+      events: p.events,
     })),
   });
 };
