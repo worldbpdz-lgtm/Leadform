@@ -1,12 +1,26 @@
 // app/routes/app.pixels.tsx
-import type { ActionFunctionArgs, LoaderFunctionArgs, HeadersFunction } from "react-router";
-import { Form, useActionData, useLoaderData, useRouteError } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
+import {
+  Form,
+  useActionData,
+  useLoaderData,
+  useRouteError,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "~/shopify.server";
 import { prisma } from "~/db.server";
 
 import type { PixelPlatform } from "@prisma/client";
-import { PIXEL_EVENTS, deleteTrackingPixel, firePixelsForRequest, upsertTrackingPixel } from "~/lib/pixels.server";
+import {
+  PIXEL_EVENTS,
+  deleteTrackingPixel,
+  firePixelsForRequest,
+  upsertTrackingPixel,
+} from "~/lib/pixels.server";
 
 function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), {
@@ -74,7 +88,8 @@ export async function action({ request }: ActionFunctionArgs) {
     if (intent === "save") {
       const platform = asPlatform(fd.get("platform"));
       const pixelId = String(fd.get("pixelId") || "").trim();
-      if (!pixelId) return json({ ok: false, error: "Pixel ID is required." }, { status: 400 });
+      if (!pixelId)
+        return json({ ok: false, error: "Pixel ID is required." }, { status: 400 });
 
       const enabled = parseBool(fd.get("enabled"));
       const apiEnabled = parseBool(fd.get("apiEnabled"));
@@ -107,9 +122,7 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     if (intent === "test") {
-      const platform = asPlatform(fd.get("platform"));
-
-      // Minimal request-like payload for test
+      // This fires against all enabled pixels (based on your DB).
       await firePixelsForRequest({
         shopId: shop.id,
         event: "request_submitted",
@@ -132,10 +145,6 @@ export async function action({ request }: ActionFunctionArgs) {
         },
       });
 
-      // Test fires all enabled pixels; if you want per-platform test, keep only that platform:
-      // (optional improvement later). For now, user clicks on a platform card and tests.
-      // To scope to that platform, you can temporarily disable the other platforms or we add a per-platform dispatcher.
-
       return json({ ok: true });
     }
 
@@ -145,125 +154,145 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
+function PlatformMeta(pl: PixelPlatform) {
+  if (pl === "facebook") {
+    return { title: "Meta (Facebook/Instagram)", hint: "Server-side supported (CAPI)." };
+  }
+  if (pl === "tiktok") {
+    return { title: "TikTok Pixel", hint: "Config + logs ready; server API wiring later." };
+  }
+  return { title: "Google (Gtag/GA4)", hint: "Config + logs ready; server API wiring later." };
+}
+
 export default function PixelsRoute() {
   const data = useLoaderData() as any;
   const actionData = useActionData() as any;
 
   const byPlatform = new Map<string, any>();
-  for (const p of data.pixels as any[]) byPlatform.set(p.platform, p);
+  for (const p of (data.pixels as any[])) byPlatform.set(p.platform, p);
 
-  const platforms: Array<{ key: PixelPlatform; title: string; hint: string }> = [
-    { key: "facebook", title: "Meta (Facebook) Pixel", hint: "Server-side supported (CAPI)." },
-    { key: "tiktok", title: "TikTok Pixel", hint: "Config + logs ready; server API wiring later." },
-    { key: "google", title: "Google (Gtag/GA4)", hint: "Config + logs ready; server API wiring later." },
-  ];
+  const platforms: PixelPlatform[] = ["facebook", "tiktok", "google"];
 
   return (
-    <div className="lf-admin">
-      <div className="lf-card" style={{ marginBottom: 16 }}>
+    <div className="lf-admin lf-pixels">
+      <div className="lf-card lf-pixels__header">
         <div className="lf-card__title">Pixels</div>
         <div className="lf-muted">
-          Configure platform IDs, choose which LeadForm events should fire, and use “Test event” to verify.
+          Configure platform IDs, select which events fire, and use “Test event” to verify.
         </div>
         {actionData?.error ? (
-          <div className="lf-alert lf-alert--danger" style={{ marginTop: 12 }}>
+          <div className="lf-alert lf-alert--danger" style={{ marginTop: 10 }}>
             {actionData.error}
           </div>
         ) : null}
       </div>
 
-      <div style={{ display: "grid", gap: 12 }}>
+      <div className="lf-pixels__grid">
         {platforms.map((pl) => {
-          const p = byPlatform.get(pl.key);
+          const meta = PlatformMeta(pl);
+          const p = byPlatform.get(pl);
           const ev = (p?.events ?? {}) as Record<string, boolean>;
 
           return (
-            <div className="lf-card" key={pl.key}>
-              <div className="lf-row lf-row--between lf-row--center">
+            <div className="lf-card lf-pixel-card" key={pl}>
+              <div className="lf-pixel-card__top">
                 <div>
-                  <div className="lf-card__title">{pl.title}</div>
-                  <div className="lf-muted">{pl.hint}</div>
+                  <div className="lf-card__title">{meta.title}</div>
+                  <div className="lf-muted">{meta.hint}</div>
                 </div>
 
-                <Form method="post">
-                  <input type="hidden" name="intent" value="delete" />
-                  <input type="hidden" name="platform" value={pl.key} />
-                  <button className="lf-btn lf-btn--ghost" type="submit" disabled={!p}>
-                    Remove
-                  </button>
-                </Form>
+                <div className="lf-pixel-card__topActions">
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="delete" />
+                    <input type="hidden" name="platform" value={pl} />
+                    <button className="lf-btn lf-btn--ghost" type="submit" disabled={!p}>
+                      Remove
+                    </button>
+                  </Form>
+                </div>
               </div>
 
-              <Form method="post" style={{ marginTop: 12 }}>
+              <Form method="post" className="lf-pixel-form">
                 <input type="hidden" name="intent" value="save" />
-                <input type="hidden" name="platform" value={pl.key} />
+                <input type="hidden" name="platform" value={pl} />
 
-                <div className="lf-grid" style={{ display: "grid", gap: 10 }}>
-                  <label className="lf-field">
-                    <div className="lf-label">Pixel ID</div>
-                    <input
-                      className="lf-input"
-                      name="pixelId"
-                      defaultValue={p?.pixelId ?? ""}
-                      placeholder={pl.key === "facebook" ? "1234567890" : "Pixel/Measurement ID"}
-                    />
-                  </label>
-
-                  <div className="lf-row" style={{ gap: 14, flexWrap: "wrap" }}>
-                    <label className="lf-check">
-                      <input type="checkbox" name="enabled" defaultChecked={p?.enabled ?? true} />
-                      <span>Enabled</span>
+                <div className="lf-pixel-form__cols">
+                  <div className="lf-pixel-form__left">
+                    <label className="lf-field">
+                      <div className="lf-label">Pixel ID</div>
+                      <input
+                        className="lf-input"
+                        name="pixelId"
+                        defaultValue={p?.pixelId ?? ""}
+                        placeholder={pl === "facebook" ? "1234567890" : "Pixel / Measurement ID"}
+                      />
                     </label>
 
-                    <label className="lf-check">
-                      <input type="checkbox" name="apiEnabled" defaultChecked={p?.apiEnabled ?? false} />
-                      <span>Server API enabled</span>
-                    </label>
-                  </div>
-
-                  <label className="lf-field">
-                    <div className="lf-label">Access token / API secret (optional)</div>
-                    <input
-                      className="lf-input"
-                      name="accessToken"
-                      placeholder="Leave empty to keep current token"
-                      autoComplete="off"
-                    />
-                    <div className="lf-muted">Stored encrypted. Only required for server-side events.</div>
-                  </label>
-
-                  <label className="lf-field">
-                    <div className="lf-label">Test code (optional)</div>
-                    <input className="lf-input" name="testCode" defaultValue={p?.testCode ?? ""} />
-                  </label>
-
-                  <div className="lf-divider" />
-
-                  <div className="lf-label">Events</div>
-                  <div className="lf-row" style={{ gap: 14, flexWrap: "wrap" }}>
-                    {data.events.map((e: string) => (
-                      <label className="lf-check" key={e}>
-                        <input type="checkbox" name={`ev_${e}`} defaultChecked={!!ev[e]} />
-                        <span>{e}</span>
+                    <div className="lf-pixel-form__checks">
+                      <label className="lf-check">
+                        <input type="checkbox" name="enabled" defaultChecked={p?.enabled ?? true} />
+                        <span>Enabled</span>
                       </label>
-                    ))}
+
+                      <label className="lf-check">
+                        <input type="checkbox" name="apiEnabled" defaultChecked={p?.apiEnabled ?? false} />
+                        <span>Server API enabled</span>
+                      </label>
+                    </div>
+
+                    <label className="lf-field">
+                      <div className="lf-label">Access token / API secret (optional)</div>
+                      <input
+                        className="lf-input"
+                        name="accessToken"
+                        placeholder="Leave empty to keep current token"
+                        autoComplete="off"
+                      />
+                      <div className="lf-muted">
+                        Stored encrypted. Only required for server-side events.
+                      </div>
+                    </label>
+
+                    <label className="lf-field">
+                      <div className="lf-label">Test code (optional)</div>
+                      <input className="lf-input" name="testCode" defaultValue={p?.testCode ?? ""} />
+                    </label>
                   </div>
 
-                  <div className="lf-row" style={{ gap: 10, flexWrap: "wrap", marginTop: 6 }}>
-                    <button className="lf-btn" type="submit">
-                      Save
-                    </button>
+                  <div className="lf-pixel-form__right">
+                    <div className="lf-label">Events</div>
+                    <div className="lf-pixel-events">
+                      {data.events.map((e: string) => (
+                        <label className="lf-check lf-pixel-events__item" key={e}>
+                          <input type="checkbox" name={`ev_${e}`} defaultChecked={!!ev[e]} />
+                          <span>{e}</span>
+                        </label>
+                      ))}
+                    </div>
 
-                    <Form method="post">
-                      <input type="hidden" name="intent" value="test" />
-                      <input type="hidden" name="platform" value={pl.key} />
-                      <button className="lf-btn lf-btn--secondary" type="submit" disabled={!p && pl.key !== "facebook"}>
-                        Test event
+                    <div className="lf-pixel-actions">
+                      <button className="lf-btn" type="submit">
+                        Save
                       </button>
-                    </Form>
 
-                    <div className="lf-muted" style={{ marginLeft: "auto" }}>
-                      Last fired: {p?.lastFiredAt ? new Date(p.lastFiredAt).toLocaleString() : "—"}
+                      {/* NOT nested in the Save <Form> (fixes invalid HTML) */}
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="test" />
+                        <input type="hidden" name="platform" value={pl} />
+                        <button className="lf-btn lf-btn--secondary" type="submit">
+                          Test event
+                        </button>
+                      </Form>
+
+                      <div className="lf-muted lf-pixel-actions__right">
+                        Last fired:{" "}
+                        {p?.lastFiredAt ? new Date(p.lastFiredAt).toLocaleString() : "—"}
+                      </div>
+                    </div>
+
+                    <div className="lf-muted" style={{ marginTop: 8 }}>
+                      Tip: enable “Server API enabled” and set the token for Meta CAPI to get
+                      success logs. TikTok/Google server wiring can be added later.
                     </div>
                   </div>
                 </div>
@@ -273,7 +302,7 @@ export default function PixelsRoute() {
         })}
       </div>
 
-      <div className="lf-card" style={{ marginTop: 12 }}>
+      <div className="lf-card lf-pixels__logs">
         <div className="lf-card__title">Pixel Event Logs</div>
         <div className="lf-muted">Last 50 attempts.</div>
 
@@ -281,7 +310,7 @@ export default function PixelsRoute() {
           <table className="lf-table">
             <thead>
               <tr>
-                <th>Time</th>
+                <th style={{ whiteSpace: "nowrap" }}>Time</th>
                 <th>Platform</th>
                 <th>Event</th>
                 <th>Status</th>
@@ -291,7 +320,9 @@ export default function PixelsRoute() {
             <tbody>
               {(data.logs as any[]).map((l) => (
                 <tr key={l.id}>
-                  <td>{new Date(l.createdAt).toLocaleString()}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {new Date(l.createdAt).toLocaleString()}
+                  </td>
                   <td>{l.platform}</td>
                   <td>{l.event}</td>
                   <td>{l.status}</td>
