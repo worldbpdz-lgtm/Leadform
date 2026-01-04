@@ -39,12 +39,11 @@ export default function App() {
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
         <NavLink href="/app" label="Dashboard" match="exact" />
-        <NavLink href="/app/requests" label="Requests" match="prefix" />
-        <NavLink href="/app/requests/basket" label="Basket" match="exact" />
-        <NavLink href="/app/forms" label="Form Builder" match="prefix" />
-        <NavLink href="/app/roles" label="Roles" match="prefix" />
-        <NavLink href="/app/integrations" label="Integrations" match="prefix" />
+        <NavLink href="/app/requests" label="Orders" match="prefix" />
+        <NavLink href="/app/integrations" label="Google sheets" match="prefix" />
         <NavLink href="/app/pixels" label="Pixels" match="prefix" />
+        <NavLink href="/app/forms" label="Form Builder" match="prefix" />
+        <NavLink href="/app/requests/basket" label="Trash" match="exact" />
       </s-app-nav>
 
       <Outlet />
