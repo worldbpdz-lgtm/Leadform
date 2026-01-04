@@ -47,10 +47,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
     orderBy: { platform: "asc" },
   });
 
+  // No limits: return all logs
   const logs = await prisma.pixelEventLog.findMany({
     where: { shopId: shop.id },
     orderBy: { createdAt: "desc" },
-    take: 50,
   });
 
   return json({ shopId: shop.id, pixels, logs, events: PIXEL_EVENTS });
@@ -85,7 +85,10 @@ export async function action({ request }: ActionFunctionArgs) {
       const platform = asPlatform(fd.get("platform"));
       const pixelId = String(fd.get("pixelId") || "").trim();
       if (!pixelId)
-        return json({ ok: false, error: "Pixel ID is required." }, { status: 400 });
+        return json(
+          { ok: false, error: "Pixel ID is required." },
+          { status: 400 }
+        );
 
       const enabled = parseBool(fd.get("enabled"));
       const apiEnabled = parseBool(fd.get("apiEnabled"));
@@ -145,7 +148,10 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({ ok: false, error: "Unknown intent" }, { status: 400 });
   } catch (e: any) {
-    return json({ ok: false, error: e?.message ?? "Action failed" }, { status: 500 });
+    return json(
+      { ok: false, error: e?.message ?? "Action failed" },
+      { status: 500 }
+    );
   }
 }
 
@@ -220,7 +226,6 @@ export default function PixelsRoute() {
 
   const [openPl, setOpenPl] = useState<PixelPlatform | null>(null);
 
-  // Restore last opened card for nicer UX
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem("lf:px:open");
@@ -236,7 +241,6 @@ export default function PixelsRoute() {
     } catch {}
   }, [openPl]);
 
-  // If an action error happens, keep whatever open (no forced close)
   const hasAnyOpen = !!openPl;
 
   return (
@@ -288,10 +292,7 @@ export default function PixelsRoute() {
           white-space: nowrap;
         }
 
-        /* Grid behavior:
-           - Default: 3 columns compact
-           - When one is open: switch to single column (stack)
-        */
+        /* Grid behavior */
         .lf-px__grid {
           margin-top: 14px;
           display: grid;
@@ -313,7 +314,6 @@ export default function PixelsRoute() {
           backdrop-filter: blur(8px);
         }
 
-        /* Top color band (about 30% visually when expanded, compact when closed) */
         .lf-px-card::before {
           content: "";
           position: absolute;
@@ -324,7 +324,6 @@ export default function PixelsRoute() {
           transform: translateY(0);
         }
 
-        /* Platform gradients */
         .lf-px-card.is-meta::before {
           background:
             radial-gradient(320px 120px at 18% 40%, rgba(0, 164, 255, 0.35), transparent 60%),
@@ -346,7 +345,6 @@ export default function PixelsRoute() {
             linear-gradient(90deg, rgba(66, 133, 244, 0.10), rgba(255,255,255,0.00));
         }
 
-        /* Header button */
         .lf-px-headBtn {
           position: relative;
           z-index: 1;
@@ -455,7 +453,6 @@ export default function PixelsRoute() {
           background: rgba(255,255,255,0.90);
         }
 
-        /* Body: animated expand/collapse */
         .lf-px-body {
           position: relative;
           z-index: 1;
@@ -473,17 +470,15 @@ export default function PixelsRoute() {
           will-change: max-height, opacity, transform;
         }
         .lf-px-card.is-open .lf-px-collapse {
-          max-height: 1800px; /* plenty for the form */
+          max-height: 1800px;
           opacity: 1;
           transform: translateY(0);
         }
 
-        /* Make the opened card feel like "full page" within the section */
         .lf-px-card.is-open {
           box-shadow: var(--px-shadow2);
         }
 
-        /* “Last fired / remove” row */
         .lf-px-topRow {
           display: flex;
           align-items: center;
@@ -496,7 +491,6 @@ export default function PixelsRoute() {
           border-radius: 10px;
         }
 
-        /* Form layout */
         .lf-px-form__grid {
           display: grid;
           grid-template-columns: 1.2fr 1fr;
@@ -516,7 +510,6 @@ export default function PixelsRoute() {
           padding-top: 18px;
         }
 
-        /* Better checkbox look (uses your existing lf-check base if present) */
         .lf-px-check {
           display: inline-flex;
           align-items: center;
@@ -578,7 +571,6 @@ export default function PixelsRoute() {
           font-weight: 700 !important;
         }
 
-        /* Logs */
         .lf-px-logs { margin-top: 14px; }
         .lf-px-table th, .lf-px-table td { font-size: 12px; }
         .lf-px-dot {
@@ -593,7 +585,6 @@ export default function PixelsRoute() {
         .lf-px-dot--tiktok { background: rgba(2,6,23,0.85); }
         .lf-px-dot--google { background: rgba(66,133,244,0.85); }
 
-        /* Responsive */
         @media (max-width: 1100px) {
           .lf-px__grid { grid-template-columns: 1fr; }
           .lf-px__grid.is-open { grid-template-columns: 1fr; }
@@ -607,8 +598,7 @@ export default function PixelsRoute() {
           <div>
             <div className="lf-card__title">Pixels</div>
             <div className="lf-muted">
-              Configure IDs, select events, and test firing. Logs show the last 50
-              attempts.
+              Configure IDs, select events, and test firing.
             </div>
           </div>
           <div className="lf-px__heroPill">Premium Tracking</div>
@@ -692,7 +682,6 @@ export default function PixelsRoute() {
                     </Form>
                   </div>
 
-                  {/* SAVE FORM (no nested forms) */}
                   <Form method="post" id={saveFormId} className="lf-px-form">
                     <input type="hidden" name="intent" value="save" />
                     <input type="hidden" name="platform" value={pl} />
@@ -770,7 +759,6 @@ export default function PixelsRoute() {
                     </div>
                   </Form>
 
-                  {/* TEST FORM (separate sibling form, NOT nested) */}
                   <Form method="post" id={testFormId} className="lf-px-testForm">
                     <input type="hidden" name="intent" value="test" />
                     <input type="hidden" name="platform" value={pl} />
@@ -792,7 +780,6 @@ export default function PixelsRoute() {
                   </div>
                 </div>
 
-                {/* When closed, keep a small “preview” line so the card doesn’t look empty */}
                 {!isOpen ? (
                   <div className="lf-muted" style={{ padding: "8px 2px 10px" }}>
                     Click to configure {platformLabel(pl)} events and test firing.
@@ -806,7 +793,6 @@ export default function PixelsRoute() {
 
       <div className="lf-card lf-px-logs">
         <div className="lf-card__title">Pixel Event Logs</div>
-        <div className="lf-muted">Last 50 attempts.</div>
 
         <div style={{ overflowX: "auto", marginTop: 10 }}>
           <table className="lf-table lf-px-table">
@@ -831,9 +817,7 @@ export default function PixelsRoute() {
                   </td>
                   <td>{l.event}</td>
                   <td>
-                    <span
-                      className={`lf-px-status ${l.status === "success" ? "ok" : "bad"}`}
-                    >
+                    <span className={`lf-px-status ${l.status === "success" ? "ok" : "bad"}`}>
                       {l.status}
                     </span>
                   </td>
