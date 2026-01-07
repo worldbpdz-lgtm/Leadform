@@ -1,9 +1,8 @@
 // app/routes/apps.leadform.submit.tsx
 import type { ActionFunctionArgs } from "react-router";
-import  prisma  from "~/db.server";
+import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { parse as parseQuery } from "node:querystring";
 import {
   makeRequestUploadPath,
   uploadToSupabase,
@@ -26,6 +25,11 @@ type VerifyOk = { ok: true; shop: string };
 type VerifyFail = { ok: false; reason: string };
 type VerifyResult = VerifyOk | VerifyFail;
 
+/**
+ * Shopify App Proxy HMAC verification.
+ * Canonicalize query params (excluding signature/hmac), join as key=value with '&',
+ * then HMAC-SHA256 with SHOPIFY_API_SECRET and compare to provided signature/hmac.
+ */
 function verifyAppProxyRequest(url: URL): VerifyResult {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
@@ -35,23 +39,23 @@ function verifyAppProxyRequest(url: URL): VerifyResult {
 
   if (!provided || !shop) return { ok: false, reason: "Missing shop/signature" };
 
-  const queryHash = parseQuery(url.search.slice(1)) as Record<string, any>;
-  delete queryHash.signature;
-  delete queryHash.hmac;
+  // Build canonical string
+  const entries: Array<[string, string]> = [];
+  url.searchParams.forEach((value, key) => {
+    if (key === "signature" || key === "hmac") return;
+    entries.push([key, value]);
+  });
 
-  const message = Object.keys(queryHash)
-    .map((k) => {
-      const v = queryHash[k];
-      const arr = Array.isArray(v) ? v : [v];
-      return `${k}=${arr.join(",")}`;
-    })
-    .sort()
-    .join("");
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+
+  const message = entries
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
 
   const digest = createHmac("sha256", secret).update(message).digest("hex");
 
   const a = Buffer.from(digest, "utf8");
-  const b = Buffer.from(provided, "utf8");
+  const b = Buffer.from(String(provided), "utf8");
   const ok = a.length === b.length && timingSafeEqual(a, b);
 
   return ok ? { ok: true, shop } : { ok: false, reason: "Bad signature" };
@@ -137,297 +141,301 @@ function parseValues(input: unknown): Record<string, any> {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const url = new URL(request.url);
+  try {
+    const url = new URL(request.url);
 
-  const verified = verifyAppProxyRequest(url);
-  if (!verified.ok) return json({ ok: false, error: verified.reason }, 401);
+    const verified = verifyAppProxyRequest(url);
+    if (!verified.ok) return json({ ok: false, error: verified.reason }, 401);
 
-  if (request.method !== "POST") {
-    return json({ ok: false, error: "Method not allowed" }, 405);
-  }
-
-  const body = await readBody(request);
-  if (!body) return json({ ok: false, error: "Invalid body" }, 400);
-
-  const roleType = asRoleType(body.roleType ?? body.role);
-  if (!roleType) {
-    return json({ ok: false, error: "roleType/role is required" }, 400);
-  }
-
-  const idempotencyKey =
-    stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
-
-  const shop = await prisma.shop.upsert({
-    where: { shopDomain: verified.shop },
-    update: { uninstalledAt: null },
-    create: { shopDomain: verified.shop, installedAt: new Date() },
-    select: { id: true },
-  });
-
-  const settings = await prisma.shopSettings.findUnique({
-    where: { shopId: shop.id },
-    select: { currentFormId: true },
-  });
-
-  const form =
-    (settings?.currentFormId
-      ? await prisma.form.findFirst({
-          where: { id: settings.currentFormId, shopId: shop.id },
-          select: { id: true },
-        })
-      : null) ||
-    (await prisma.form.findFirst({
-      where: { shopId: shop.id, isActive: true },
-      orderBy: { updatedAt: "desc" },
-      select: { id: true },
-    }));
-
-  const role = await prisma.role.findFirst({
-    where: { shopId: shop.id, type: roleType, active: true },
-    select: { id: true },
-  });
-
-  const firstName = stringOrNull(body.firstName);
-  const lastName = stringOrNull(body.lastName);
-  const email = stringOrNull(body.email);
-  const phone = stringOrNull(body.phone);
-  const address = stringOrNull(body.address);
-
-  const wilayaCode = parseIntOrNull(body.wilayaCode);
-  const communeId = stringOrNull(body.communeId);
-
-  const pageUrl = stringOrNull(body.pageUrl);
-  const referrer = stringOrNull(body.referrer) || request.headers.get("referer") || null;
-
-  const ip =
-    stringOrNull(body.ip) ||
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    null;
-
-  const userAgent = request.headers.get("user-agent") ?? null;
-
-  const productId = stringOrNull(body.productId);
-  const variantId = stringOrNull(body.variantId);
-  const qty = parseQty(body.qty);
-
-  let itemsInput: any = body.items;
-
-if (typeof itemsInput === "string") {
-  const s = itemsInput.trim();
-  if (s) {
-    try {
-      const parsed = JSON.parse(s);
-      if (Array.isArray(parsed)) itemsInput = parsed;
-    } catch {
-      // ignore
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
     }
-  }
-}
 
-const items =
-  Array.isArray(itemsInput) && itemsInput.length
-    ? itemsInput
-        .map((it: any) => ({
-          productId: stringOrNull(it?.productId),
-          variantId: stringOrNull(it?.variantId),
-          qty: parseQty(it?.qty),
-        }))
-        .filter((it: any) => Boolean(it.productId))
-    : productId
-    ? [{ productId, variantId, qty }]
-    : null;
+    const body = await readBody(request);
+    if (!body) return json({ ok: false, error: "Invalid body" }, 400);
 
-  if (!items || items.length === 0) {
-    return json({ ok: false, error: "At least one item is required" }, 400);
-  }
-
-  const files = [
-    ...asFiles(body.document),
-    ...asFiles(body.documents),
-    ...asFiles(body["documents[]"]),
-    ...asFiles(body.files),
-    ...asFiles(body["files[]"]),
-  ];
-
-  const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
-
-  if (needsDoc && files.length === 0) {
-    return json({ ok: false, error: "Document is required for this role" }, 400);
-  }
-
-  if (files.length > 10) {
-    return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
-  }
-
-  const requirement =
-    needsDoc && role?.id
-      ? await prisma.roleRequirement.findFirst({
-          where: { roleId: role.id, required: true },
-          orderBy: { createdAt: "asc" },
-          select: {
-            key: true,
-            label: true,
-            acceptedMimeTypes: true,
-            maxSizeBytes: true,
-          },
-        })
-      : null;
-
-  const defaultAllowed = ["application/pdf", "image/*"];
-  const allowedMimeTypes = Array.from(
-    new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
-  );
-
-  for (const f of files) {
-    try {
-      validateUploadFile(f, {
-        allowedMimeTypes,
-        maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
-      });
-    } catch (e: any) {
-      return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+    const roleType = asRoleType(body.roleType ?? body.role);
+    if (!roleType) {
+      return json({ ok: false, error: "roleType/role is required" }, 400);
     }
-  }
 
-  if (idempotencyKey) {
-    const existing = await prisma.request.findFirst({
-      where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
+    const idempotencyKey =
+      stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
+
+    const shop = await prisma.shop.upsert({
+      where: { shopDomain: verified.shop },
+      update: { uninstalledAt: null },
+      create: { shopDomain: verified.shop, installedAt: new Date() },
       select: { id: true },
     });
-    if (existing) {
-      return json({ ok: true, requestId: existing.id, deduped: true }, 200);
-    }
-  }
 
-  const primary = items[0];
+    const settings = await prisma.shopSettings.findUnique({
+      where: { shopId: shop.id },
+      select: { currentFormId: true },
+    });
 
-  const baseValues = parseValues((body as any).values);
-  const productTitle =
-    stringOrNull(body.productTitle) || stringOrNull((baseValues as any)?.productTitle);
-  const productUrl =
-    stringOrNull(body.productUrl) || stringOrNull((baseValues as any)?.productUrl);
-  const productImageUrl =
-    stringOrNull(body.productImageUrl) || stringOrNull((baseValues as any)?.productImageUrl);
+    const form =
+      (settings?.currentFormId
+        ? await prisma.form.findFirst({
+            where: { id: settings.currentFormId, shopId: shop.id },
+            select: { id: true },
+          })
+        : null) ||
+      (await prisma.form.findFirst({
+        where: { shopId: shop.id, isActive: true },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true },
+      }));
 
-  const values = {
-    ...(baseValues || {}),
-    ...(productTitle ? { productTitle } : {}),
-    ...(productUrl ? { productUrl } : {}),
-    ...(productImageUrl ? { productImageUrl } : {}),
-  };
+    const role = await prisma.role.findFirst({
+      where: { shopId: shop.id, type: roleType, active: true },
+      select: { id: true },
+    });
 
-  const created = await prisma.request.create({
-    data: {
-      shopId: shop.id,
-      status: "received",
-      idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
+    const firstName = stringOrNull(body.firstName);
+    const lastName = stringOrNull(body.lastName);
+    const email = stringOrNull(body.email);
+    const phone = stringOrNull(body.phone);
+    const address = stringOrNull(body.address);
 
-      roleType,
-      roleId: role?.id ?? null,
-      formId: form?.id ?? null,
+    const wilayaCode = parseIntOrNull(body.wilayaCode);
+    const communeId = stringOrNull(body.communeId);
 
-      firstName,
-      lastName,
-      email,
-      phone,
-      address,
+    const pageUrl = stringOrNull(body.pageUrl);
+    const referrer = stringOrNull(body.referrer) || request.headers.get("referer") || null;
 
-      wilayaCode,
-      communeId,
+    const ip =
+      stringOrNull(body.ip) ||
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      null;
 
-      pageUrl,
-      referrer,
-      ip,
-      userAgent,
+    const userAgent = request.headers.get("user-agent") ?? null;
 
-      productId: primary.productId!,
-      variantId: primary.variantId,
-      qty: primary.qty,
+    const productId = stringOrNull(body.productId);
+    const variantId = stringOrNull(body.variantId);
+    const qty = parseQty(body.qty);
 
-      values,
+    let itemsInput: any = body.items;
 
-      items: { create: items as any },
-    },
-    select: { id: true, createdAt: true },
-  });
-
-  if (files.length) {
-    const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
-
-    try {
-      for (const f of files) {
-        const path = makeRequestUploadPath({
-          shopId: shop.id,
-          requestId: created.id,
-          originalName: f.name || "document",
-        });
-
-        const up = await uploadToSupabase({ bucket, path, file: f });
-
-        const uploadRow = await prisma.upload.create({
-          data: {
-            shopId: shop.id,
-            provider: "supabase",
-            bucket,
-            path,
-            url: null,
-            mimeType: up.mimeType,
-            sizeBytes: up.sizeBytes,
-            checksum: up.checksum,
-            purpose: "role_document",
-          },
-          select: { id: true },
-        });
-
-        await prisma.requestAttachment.create({
-          data: {
-            requestId: created.id,
-            uploadId: uploadRow.id,
-            requirementKey: requirement?.key ?? "documents",
-            label: f.name || requirement?.label || "Document",
-          },
-          select: { id: true },
-        });
+    if (typeof itemsInput === "string") {
+      const s = itemsInput.trim();
+      if (s) {
+        try {
+          const parsed = JSON.parse(s);
+          if (Array.isArray(parsed)) itemsInput = parsed;
+        } catch {
+          // ignore
+        }
       }
-    } catch (e: any) {
-      await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
-      return json({ ok: false, error: e?.message || "Upload failed" }, 500);
     }
-  }
 
-  // Fire pixels (best-effort; keep short await to increase reliability on serverless)
-  await Promise.race([
-    firePixelsForRequest({
-      shopId: shop.id,
-      event: "request_submitted",
-      request: {
-        id: created.id,
+    const items =
+      Array.isArray(itemsInput) && itemsInput.length
+        ? itemsInput
+            .map((it: any) => ({
+              productId: stringOrNull(it?.productId),
+              variantId: stringOrNull(it?.variantId),
+              qty: parseQty(it?.qty),
+            }))
+            .filter((it: any) => Boolean(it.productId))
+        : productId
+        ? [{ productId, variantId, qty }]
+        : null;
+
+    if (!items || items.length === 0) {
+      return json({ ok: false, error: "At least one item is required" }, 400);
+    }
+
+    const files = [
+      ...asFiles(body.document),
+      ...asFiles(body.documents),
+      ...asFiles(body["documents[]"]),
+      ...asFiles(body.files),
+      ...asFiles(body["files[]"]),
+    ];
+
+    const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
+
+    if (needsDoc && files.length === 0) {
+      return json({ ok: false, error: "Document is required for this role" }, 400);
+    }
+
+    if (files.length > 10) {
+      return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
+    }
+
+    const requirement =
+      needsDoc && role?.id
+        ? await prisma.roleRequirement.findFirst({
+            where: { roleId: role.id, required: true },
+            orderBy: { createdAt: "asc" },
+            select: {
+              key: true,
+              label: true,
+              acceptedMimeTypes: true,
+              maxSizeBytes: true,
+            },
+          })
+        : null;
+
+    const defaultAllowed = ["application/pdf", "image/*"];
+    const allowedMimeTypes = Array.from(
+      new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
+    );
+
+    for (const f of files) {
+      try {
+        validateUploadFile(f, {
+          allowedMimeTypes,
+          maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
+        });
+      } catch (e: any) {
+        return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+      }
+    }
+
+    if (idempotencyKey) {
+      const existing = await prisma.request.findFirst({
+        where: { shopId: shop.id, idempotencyKey: String(idempotencyKey) },
+        select: { id: true },
+      });
+      if (existing) {
+        return json({ ok: true, requestId: existing.id, deduped: true }, 200);
+      }
+    }
+
+    const primary = items[0];
+
+    const baseValues = parseValues((body as any).values);
+    const productTitle =
+      stringOrNull(body.productTitle) || stringOrNull((baseValues as any)?.productTitle);
+    const productUrl =
+      stringOrNull(body.productUrl) || stringOrNull((baseValues as any)?.productUrl);
+    const productImageUrl =
+      stringOrNull(body.productImageUrl) || stringOrNull((baseValues as any)?.productImageUrl);
+
+    const values = {
+      ...(baseValues || {}),
+      ...(productTitle ? { productTitle } : {}),
+      ...(productUrl ? { productUrl } : {}),
+      ...(productImageUrl ? { productImageUrl } : {}),
+    };
+
+    const created = await prisma.request.create({
+      data: {
+        shopId: shop.id,
+        status: "received",
+        idempotencyKey: idempotencyKey ? String(idempotencyKey) : null,
+
+        roleType,
+        roleId: role?.id ?? null,
+        formId: form?.id ?? null,
+
+        firstName,
+        lastName,
         email,
         phone,
-        ip,
-        userAgent,
+        address,
+
+        wilayaCode,
+        communeId,
+
         pageUrl,
         referrer,
+        ip,
+        userAgent,
+
         productId: primary.productId!,
+        variantId: primary.variantId,
         qty: primary.qty,
-        createdAt: created.createdAt,
-        items: (items as any).map((it: any) => ({
-          productId: it.productId!,
-          qty: it.qty,
-        })),
-        currency: "DZD",
-        value: 0,
+
+        values,
+
+        items: { create: items as any },
       },
-    }),
-    new Promise((resolve) => setTimeout(resolve, 800)),
-  ]).catch(() => {});
+      select: { id: true, createdAt: true },
+    });
 
-  // DB -> Sheet (best-effort; never block customer)
-  syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
+    if (files.length) {
+      const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
 
-  return json({
-    ok: true,
-    requestId: created.id,
-    uploadReceived: files.length,
-  });
+      try {
+        for (const f of files) {
+          const path = makeRequestUploadPath({
+            shopId: shop.id,
+            requestId: created.id,
+            originalName: f.name || "document",
+          });
+
+          const up = await uploadToSupabase({ bucket, path, file: f });
+
+          const uploadRow = await prisma.upload.create({
+            data: {
+              shopId: shop.id,
+              provider: "supabase",
+              bucket,
+              path,
+              url: null,
+              mimeType: up.mimeType,
+              sizeBytes: up.sizeBytes,
+              checksum: up.checksum,
+              purpose: "role_document",
+            },
+            select: { id: true },
+          });
+
+          await prisma.requestAttachment.create({
+            data: {
+              requestId: created.id,
+              uploadId: uploadRow.id,
+              requirementKey: requirement?.key ?? "documents",
+              label: f.name || requirement?.label || "Document",
+            },
+            select: { id: true },
+          });
+        }
+      } catch (e: any) {
+        await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
+        return json({ ok: false, error: e?.message || "Upload failed" }, 500);
+      }
+    }
+
+    // Fire pixels (best-effort; keep short await to increase reliability on serverless)
+    await Promise.race([
+      firePixelsForRequest({
+        shopId: shop.id,
+        event: "request_submitted",
+        request: {
+          id: created.id,
+          email,
+          phone,
+          ip,
+          userAgent,
+          pageUrl,
+          referrer,
+          productId: primary.productId!,
+          qty: primary.qty,
+          createdAt: created.createdAt,
+          items: (items as any).map((it: any) => ({
+            productId: it.productId!,
+            qty: it.qty,
+          })),
+          currency: "DZD",
+          value: 0,
+        },
+      }),
+      new Promise((resolve) => setTimeout(resolve, 800)),
+    ]).catch(() => {});
+
+    // DB -> Sheet (best-effort; never block customer)
+    syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
+
+    return json({
+      ok: true,
+      requestId: created.id,
+      uploadReceived: files.length,
+    });
+  } catch (e: any) {
+    return json({ ok: false, error: e?.message || "Server error" }, 500);
+  }
 };
