@@ -210,18 +210,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const variantId = stringOrNull(body.variantId);
   const qty = parseQty(body.qty);
 
-  const items =
-    Array.isArray(body.items) && body.items.length
-      ? body.items
-          .map((it: any) => ({
-            productId: stringOrNull(it?.productId),
-            variantId: stringOrNull(it?.variantId),
-            qty: parseQty(it?.qty),
-          }))
-          .filter((it: any) => Boolean(it.productId))
-      : productId
-      ? [{ productId, variantId, qty }]
-      : null;
+  let itemsInput: any = body.items;
+
+if (typeof itemsInput === "string") {
+  const s = itemsInput.trim();
+  if (s) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) itemsInput = parsed;
+    } catch {
+      // ignore
+    }
+  }
+}
+
+const items =
+  Array.isArray(itemsInput) && itemsInput.length
+    ? itemsInput
+        .map((it: any) => ({
+          productId: stringOrNull(it?.productId),
+          variantId: stringOrNull(it?.variantId),
+          qty: parseQty(it?.qty),
+        }))
+        .filter((it: any) => Boolean(it.productId))
+    : productId
+    ? [{ productId, variantId, qty }]
+    : null;
 
   if (!items || items.length === 0) {
     return json({ ok: false, error: "At least one item is required" }, 400);
