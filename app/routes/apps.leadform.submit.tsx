@@ -1,6 +1,6 @@
 // app/routes/apps.leadform.submit.tsx
 import type { ActionFunctionArgs } from "react-router";
-import prisma from "~/db.server";
+import { prisma } from "~/db.server";
 import { RoleType } from "@prisma/client";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { parse as parseQuery } from "node:querystring";
