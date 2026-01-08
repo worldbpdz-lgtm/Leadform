@@ -10,6 +10,7 @@ import {
 } from "~/lib/uploads.server";
 import { syncRequestToPrimarySheet } from "~/lib/sheets.server";
 import { firePixelsForRequest } from "~/lib/pixels.server";
+import { createClient } from "@supabase/supabase-js";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -19,6 +20,23 @@ function json(data: unknown, status = 200) {
       "Cache-Control": "no-store",
     },
   });
+}
+
+function mustEnv(name: string) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+
+let _supabaseAdmin: ReturnType<typeof createClient> | null = null;
+function getSupabaseAdmin() {
+  if (_supabaseAdmin) return _supabaseAdmin;
+  const url = mustEnv("SUPABASE_URL");
+  const key = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+  _supabaseAdmin = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return _supabaseAdmin;
 }
 
 function asRoleType(input: unknown): RoleType | null {
@@ -100,6 +118,86 @@ function parseValues(input: unknown): Record<string, any> {
   return {};
 }
 
+type UploadMeta = { name: string; size: number; type: string };
+function parseUploadMetas(input: unknown): UploadMeta[] {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input
+      .map((x: any) => ({
+        name: String(x?.name || "").trim(),
+        size: Number(x?.size || 0),
+        type: String(x?.type || "").trim(),
+      }))
+      .filter((x) => x.name && Number.isFinite(x.size) && x.size > 0);
+  }
+  if (typeof input === "string") {
+    try {
+      return parseUploadMetas(JSON.parse(input));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+type UploadedFileMeta = {
+  bucket: string;
+  path: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  originalName: string | null;
+};
+function parseUploadedFiles(input: unknown): UploadedFileMeta[] {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input
+      .map((x: any) => ({
+        bucket: String(x?.bucket || "").trim(),
+        path: String(x?.path || "").trim(),
+        mimeType: x?.mimeType ? String(x.mimeType) : null,
+        sizeBytes: Number.isFinite(Number(x?.sizeBytes)) ? Number(x.sizeBytes) : null,
+        originalName: x?.originalName ? String(x.originalName) : null,
+      }))
+      .filter((x) => x.bucket && x.path);
+  }
+  if (typeof input === "string") {
+    try {
+      return parseUploadedFiles(JSON.parse(input));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function mimeAllowed(mime: string, allowed: string[]) {
+  if (!mime) return false;
+  for (const a of allowed) {
+    if (a === mime) return true;
+    if (a.endsWith("/*")) {
+      const pref = a.slice(0, -2);
+      if (mime.startsWith(pref + "/")) return true;
+    }
+  }
+  return false;
+}
+
+function safeName(name: string) {
+  return name
+    .replace(/[^\w.\- ]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function makePreuploadPath(args: { shopId: string; idempotencyKey: string; originalName: string }) {
+  const ts = Date.now();
+  const rand = Math.random().toString(16).slice(2);
+  return `${args.shopId}/preuploads/${args.idempotencyKey}/${ts}-${rand}-${safeName(
+    args.originalName || "document"
+  )}`;
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const url = new URL(request.url);
@@ -114,6 +212,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const body = await readBody(request);
     if (!body) return json({ ok: false, error: "Invalid body" }, 400);
 
+    const intent = String(body.intent || "").trim();
+    const isPrepare = intent === "prepare_upload";
+
     const roleType = asRoleType(body.roleType ?? body.role);
     if (!roleType) {
       return json({ ok: false, error: "roleType/role is required" }, 400);
@@ -122,6 +223,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const idempotencyKey =
       stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
 
+    // Upsert shop early (needed for signed upload paths + request)
     const shop = await prisma.shop.upsert({
       where: { shopDomain: verified.shop },
       update: { uninstalledAt: null },
@@ -129,6 +231,109 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       select: { id: true },
     });
 
+    const role = await prisma.role.findFirst({
+      where: { shopId: shop.id, type: roleType, active: true },
+      select: { id: true },
+    });
+
+    const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
+
+    const requirement =
+      needsDoc && role?.id
+        ? await prisma.roleRequirement.findFirst({
+            where: { roleId: role.id, required: true },
+            orderBy: { createdAt: "asc" },
+            select: {
+              key: true,
+              label: true,
+              acceptedMimeTypes: true,
+              maxSizeBytes: true,
+            },
+          })
+        : null;
+
+    const defaultAllowed = ["application/pdf", "image/*"];
+    const allowedMimeTypes = Array.from(
+      new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
+    );
+
+    // =========================
+    // PREPARE SIGNED UPLOAD URLs
+    // =========================
+    if (isPrepare) {
+      const metas =
+        parseUploadMetas(body.files) ||
+        parseUploadMetas(body.filesMeta) ||
+        parseUploadMetas(body.uploads);
+
+      if (needsDoc && metas.length === 0) {
+        return json({ ok: false, error: "Document is required for this role" }, 400);
+      }
+
+      if (metas.length > 10) {
+        return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
+      }
+
+      // Default big-file allowance for signed uploads (adjustable via RoleRequirement.maxSizeBytes)
+      const maxSize =
+        typeof requirement?.maxSizeBytes === "number" && requirement.maxSizeBytes > 0
+          ? requirement.maxSizeBytes
+          : 25 * 1024 * 1024; // 25MB default per file
+
+      for (const m of metas) {
+        if (!m.name) return json({ ok: false, error: "Invalid file meta" }, 400);
+        if (!m.type || !mimeAllowed(m.type, allowedMimeTypes)) {
+          return json({ ok: false, error: `File type not allowed: ${m.type || "unknown"}` }, 400);
+        }
+        if (m.size > maxSize) {
+          return json({
+            ok: false,
+            error: `File too large: ${m.name} (${Math.ceil(m.size / 1024 / 1024)}MB). Max is ${Math.floor(
+              maxSize / 1024 / 1024
+            )}MB.`,
+          }, 400);
+        }
+      }
+
+      if (!idempotencyKey) {
+        // Required so we can group preuploads predictably
+        return json({ ok: false, error: "idempotencyKey is required for uploads" }, 400);
+      }
+
+      const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
+      const supabase = getSupabaseAdmin();
+
+      const uploads = [];
+      for (const m of metas) {
+        const path = makePreuploadPath({
+          shopId: shop.id,
+          idempotencyKey: String(idempotencyKey),
+          originalName: m.name,
+        });
+
+        const { data, error } = await supabase.storage.from(bucket).createSignedUploadUrl(path);
+        if (error || !data?.signedUrl) {
+          throw new Error(error?.message || "Failed to create signed upload URL");
+        }
+
+        uploads.push({
+          bucket,
+          path: data.path || path,
+          signedUrl: data.signedUrl,
+          // token included in signedUrl query already, but returning it is useful for debugging
+          token: (data as any).token ?? null,
+          mimeType: m.type,
+          sizeBytes: m.size,
+          originalName: m.name,
+        });
+      }
+
+      return json({ ok: true, uploads }, 200);
+    }
+
+    // =========================
+    // NORMAL SUBMIT
+    // =========================
     const settings = await prisma.shopSettings.findUnique({
       where: { shopId: shop.id },
       select: { currentFormId: true },
@@ -146,11 +351,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         orderBy: { updatedAt: "desc" },
         select: { id: true },
       }));
-
-    const role = await prisma.role.findFirst({
-      where: { shopId: shop.id, type: roleType, active: true },
-      select: { id: true },
-    });
 
     const firstName = stringOrNull(body.firstName);
     const lastName = stringOrNull(body.lastName);
@@ -206,6 +406,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return json({ ok: false, error: "At least one item is required" }, 400);
     }
 
+    // Accept either real multipart files OR preuploaded metadata (preferred for big files)
     const files = [
       ...asFiles(body.document),
       ...asFiles(body.documents),
@@ -214,35 +415,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ...asFiles(body["files[]"]),
     ];
 
-    const needsDoc = roleType === RoleType.installer || roleType === RoleType.company;
+    const uploadedFiles =
+      parseUploadedFiles(body.uploadedFiles) ||
+      parseUploadedFiles(body.uploads) ||
+      parseUploadedFiles(body.preuploaded);
 
-    if (needsDoc && files.length === 0) {
+    if (needsDoc && files.length === 0 && uploadedFiles.length === 0) {
       return json({ ok: false, error: "Document is required for this role" }, 400);
     }
 
-    if (files.length > 10) {
+    if (files.length > 10 || uploadedFiles.length > 10) {
       return json({ ok: false, error: "Maximum 10 files allowed" }, 400);
     }
 
-    const requirement =
-      needsDoc && role?.id
-        ? await prisma.roleRequirement.findFirst({
-            where: { roleId: role.id, required: true },
-            orderBy: { createdAt: "asc" },
-            select: {
-              key: true,
-              label: true,
-              acceptedMimeTypes: true,
-              maxSizeBytes: true,
-            },
-          })
-        : null;
-
-    const defaultAllowed = ["application/pdf", "image/*"];
-    const allowedMimeTypes = Array.from(
-      new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
-    );
-
+    // Validate real files (legacy path) using your existing helper (may have smaller default limits)
     for (const f of files) {
       try {
         validateUploadFile(f, {
@@ -251,6 +437,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       } catch (e: any) {
         return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+      }
+    }
+
+    // Validate uploadedFiles metadata similarly (type + size)
+    // (Use a larger default than legacy path, because these do NOT hit your server size limit.)
+    const metaMaxSize =
+      typeof requirement?.maxSizeBytes === "number" && requirement.maxSizeBytes > 0
+        ? requirement.maxSizeBytes
+        : 25 * 1024 * 1024;
+
+    for (const uf of uploadedFiles) {
+      const mt = uf.mimeType || "";
+      if (!mt || !mimeAllowed(mt, allowedMimeTypes)) {
+        return json({ ok: false, error: `File type not allowed: ${mt || "unknown"}` }, 400);
+      }
+      if (typeof uf.sizeBytes === "number" && uf.sizeBytes > metaMaxSize) {
+        return json({
+          ok: false,
+          error: `File too large: ${uf.originalName || uf.path} (${Math.ceil(
+            uf.sizeBytes / 1024 / 1024
+          )}MB). Max is ${Math.floor(metaMaxSize / 1024 / 1024)}MB.`,
+        }, 400);
       }
     }
 
@@ -316,43 +524,97 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       select: { id: true, createdAt: true },
     });
 
-    if (files.length) {
+    // Attachments
+    if (files.length || uploadedFiles.length) {
       const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
 
       try {
-        for (const f of files) {
-          const path = makeRequestUploadPath({
-            shopId: shop.id,
-            requestId: created.id,
-            originalName: f.name || "document",
-          });
+        // A) preuploaded files: move into final request folder + create Upload rows
+        if (uploadedFiles.length) {
+          const supabase = getSupabaseAdmin();
 
-          const up = await uploadToSupabase({ bucket, path, file: f });
-
-          const uploadRow = await prisma.upload.create({
-            data: {
+          for (const uf of uploadedFiles) {
+            const fromPath = uf.path;
+            const originalName = uf.originalName || "document";
+            const toPath = makeRequestUploadPath({
               shopId: shop.id,
-              provider: "supabase",
-              bucket,
-              path,
-              url: null,
-              mimeType: up.mimeType,
-              sizeBytes: up.sizeBytes,
-              checksum: up.checksum,
-              purpose: "role_document",
-            },
-            select: { id: true },
-          });
-
-          await prisma.requestAttachment.create({
-            data: {
               requestId: created.id,
-              uploadId: uploadRow.id,
-              requirementKey: requirement?.key ?? "documents",
-              label: f.name || requirement?.label || "Document",
-            },
-            select: { id: true },
-          });
+              originalName,
+            });
+
+            let finalPath = fromPath;
+
+            // Try to move (keeps storage organized). If move fails, keep original path.
+            try {
+              const { error: moveErr } = await supabase.storage.from(uf.bucket || bucket).move(fromPath, toPath);
+              if (!moveErr) finalPath = toPath;
+            } catch {
+              // ignore
+            }
+
+            const uploadRow = await prisma.upload.create({
+              data: {
+                shopId: shop.id,
+                provider: "supabase",
+                bucket: uf.bucket || bucket,
+                path: finalPath,
+                url: null,
+                mimeType: uf.mimeType || "application/octet-stream",
+                sizeBytes: uf.sizeBytes ?? null,
+                checksum: null,
+                purpose: "role_document",
+              },
+              select: { id: true },
+            });
+
+            await prisma.requestAttachment.create({
+              data: {
+                requestId: created.id,
+                uploadId: uploadRow.id,
+                requirementKey: requirement?.key ?? "documents",
+                label: originalName || requirement?.label || "Document",
+              },
+              select: { id: true },
+            });
+          }
+        }
+
+        // B) legacy multipart files: upload through server (small files only)
+        if (files.length) {
+          for (const f of files) {
+            const path = makeRequestUploadPath({
+              shopId: shop.id,
+              requestId: created.id,
+              originalName: f.name || "document",
+            });
+
+            const up = await uploadToSupabase({ bucket, path, file: f });
+
+            const uploadRow = await prisma.upload.create({
+              data: {
+                shopId: shop.id,
+                provider: "supabase",
+                bucket,
+                path,
+                url: null,
+                mimeType: up.mimeType,
+                sizeBytes: up.sizeBytes,
+                checksum: up.checksum,
+                purpose: "role_document",
+              },
+              select: { id: true },
+            });
+
+            await prisma.requestAttachment.create({
+              data: {
+                requestId: created.id,
+                uploadId: uploadRow.id,
+                requirementKey: requirement?.key ?? "documents",
+                label: f.name || requirement?.label || "Document",
+              },
+              select: { id: true },
+            });
+          }
         }
       } catch (e: any) {
         await prisma.request.delete({ where: { id: created.id } }).catch(() => {});
@@ -360,7 +622,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
-    // Fire pixels (best-effort; keep short await to increase reliability on serverless)
+    // Fire pixels (best-effort)
     await Promise.race([
       firePixelsForRequest({
         shopId: shop.id,
@@ -393,7 +655,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({
       ok: true,
       requestId: created.id,
-      uploadReceived: files.length,
+      uploadReceived: (files.length || uploadedFiles.length) ? (files.length + uploadedFiles.length) : 0,
     });
   } catch (e: any) {
     return json({ ok: false, error: e?.message || "Server error" }, 500);
