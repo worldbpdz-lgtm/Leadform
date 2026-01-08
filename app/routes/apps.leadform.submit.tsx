@@ -2,7 +2,14 @@
 import type { ActionFunctionArgs } from "react-router";
 import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
-import { verifyAppProxyRequest } from "../lib/appProxy.server";
+import { verifyAppProxyRequest } from "~/lib/appProxy.server";
+import {
+  makeRequestUploadPath,
+  uploadToSupabase,
+  validateUploadFile,
+} from "~/lib/uploads.server";
+import { syncRequestToPrimarySheet } from "~/lib/sheets.server";
+import { firePixelsForRequest } from "~/lib/pixels.server";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -236,18 +243,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
     );
 
-    // Validate files only if present (avoids any upload-module work when no files)
-    if (files.length) {
-      const { validateUploadFile } = await import("../lib/uploads.server");
-      for (const f of files) {
-        try {
-          validateUploadFile(f, {
-            allowedMimeTypes,
-            maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
-          });
-        } catch (e: any) {
-          return json({ ok: false, error: e?.message || "Invalid file" }, 400);
-        }
+    for (const f of files) {
+      try {
+        validateUploadFile(f, {
+          allowedMimeTypes,
+          maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
+        });
+      } catch (e: any) {
+        return json({ ok: false, error: e?.message || "Invalid file" }, 400);
       }
     }
 
@@ -315,7 +318,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (files.length) {
       const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
-      const { makeRequestUploadPath, uploadToSupabase } = await import("../lib/uploads.server");
 
       try {
         for (const f of files) {
@@ -358,45 +360,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
-    // Pixels (best-effort)
-    try {
-      const { firePixelsForRequest } = await import("../lib/pixels.server");
-      await Promise.race([
-        firePixelsForRequest({
-          shopId: shop.id,
-          event: "request_submitted",
-          request: {
-            id: created.id,
-            email,
-            phone,
-            ip,
-            userAgent,
-            pageUrl,
-            referrer,
-            productId: primary.productId!,
-            qty: primary.qty,
-            createdAt: created.createdAt,
-            items: (items as any).map((it: any) => ({
-              productId: it.productId!,
-              qty: it.qty,
-            })),
-            currency: "DZD",
-            value: 0,
-          },
-        }),
-        new Promise((resolve) => setTimeout(resolve, 800)),
-      ]).catch(() => {});
-    } catch {
-      // ignore
-    }
+    // Fire pixels (best-effort; keep short await to increase reliability on serverless)
+    await Promise.race([
+      firePixelsForRequest({
+        shopId: shop.id,
+        event: "request_submitted",
+        request: {
+          id: created.id,
+          email,
+          phone,
+          ip,
+          userAgent,
+          pageUrl,
+          referrer,
+          productId: primary.productId!,
+          qty: primary.qty,
+          createdAt: created.createdAt,
+          items: (items as any).map((it: any) => ({
+            productId: it.productId!,
+            qty: it.qty,
+          })),
+          currency: "DZD",
+          value: 0,
+        },
+      }),
+      new Promise((resolve) => setTimeout(resolve, 800)),
+    ]).catch(() => {});
 
-    // DB -> Sheet (best-effort)
-    try {
-      const { syncRequestToPrimarySheet } = await import("../lib/sheets.server");
-      syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
-    } catch {
-      // ignore
-    }
+    // DB -> Sheet (best-effort; never block customer)
+    syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
 
     return json({
       ok: true,
