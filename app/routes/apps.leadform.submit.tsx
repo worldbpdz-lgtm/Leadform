@@ -26,39 +26,67 @@ type VerifyFail = { ok: false; reason: string };
 type VerifyResult = VerifyOk | VerifyFail;
 
 /**
- * Shopify App Proxy HMAC verification.
- * Canonicalize query params (excluding signature/hmac), join as key=value with '&',
- * then HMAC-SHA256 with SHOPIFY_API_SECRET and compare to provided signature/hmac.
+ * Shopify App Proxy verification.
+ *
+ * Shopify can send either:
+ * - signature (App Proxy): HMAC_SHA256(secret, concat(sorted(key=value)))  // no '&'
+ * - hmac (standard):       HMAC_SHA256(secret, join(sorted(key=value), '&'))
+ *
+ * We accept either, preferring `signature` when present.
  */
 function verifyAppProxyRequest(url: URL): VerifyResult {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
 
-  const provided = url.searchParams.get("signature") || url.searchParams.get("hmac");
   const shop = url.searchParams.get("shop");
+  const signature = url.searchParams.get("signature");
+  const hmac = url.searchParams.get("hmac");
 
-  if (!provided || !shop) return { ok: false, reason: "Missing shop/signature" };
+  if (!shop) return { ok: false, reason: "Missing shop" };
+  if (!signature && !hmac) return { ok: false, reason: "Missing signature/hmac" };
 
-  // Build canonical string
-  const entries: Array<[string, string]> = [];
-  url.searchParams.forEach((value, key) => {
-    if (key === "signature" || key === "hmac") return;
-    entries.push([key, value]);
-  });
+  function buildPairs(exclude: Set<string>) {
+    const map = new Map<string, string[]>();
 
-  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+    const keys = Array.from(new Set(Array.from(url.searchParams.keys())))
+      .filter((k) => !exclude.has(k))
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
-  const message = entries
-    .map(([k, v]) => `${k}=${v}`)
-    .join("&");
+    for (const k of keys) {
+      const all = url.searchParams.getAll(k);
+      if (!all.length) continue;
+      map.set(k, all.map((v) => String(v)));
+    }
 
+    return keys
+      .filter((k) => map.has(k))
+      .map((k) => `${k}=${map.get(k)!.join(",")}`);
+  }
+
+  function safeEqualHex(calcHex: string, providedHex: string) {
+    const a = calcHex.toLowerCase();
+    const b = String(providedHex).toLowerCase();
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+  }
+
+  // 1) App Proxy signature
+  if (signature) {
+    const pairs = buildPairs(new Set(["signature", "hmac"]));
+    const message = pairs.join(""); // IMPORTANT: no '&'
+    const digest = createHmac("sha256", secret).update(message).digest("hex");
+    return safeEqualHex(digest, signature)
+      ? { ok: true, shop }
+      : { ok: false, reason: "Bad signature" };
+  }
+
+  // 2) Standard hmac
+  const pairs = buildPairs(new Set(["signature", "hmac"]));
+  const message = pairs.join("&");
   const digest = createHmac("sha256", secret).update(message).digest("hex");
-
-  const a = Buffer.from(digest, "utf8");
-  const b = Buffer.from(String(provided), "utf8");
-  const ok = a.length === b.length && timingSafeEqual(a, b);
-
-  return ok ? { ok: true, shop } : { ok: false, reason: "Bad signature" };
+  return safeEqualHex(digest, hmac!)
+    ? { ok: true, shop }
+    : { ok: false, reason: "Bad hmac" };
 }
 
 function asRoleType(input: unknown): RoleType | null {
