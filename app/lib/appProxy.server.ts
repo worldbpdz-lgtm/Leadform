@@ -1,42 +1,49 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { parse as parseQuery } from "node:querystring";
 
 type VerifyOk = { ok: true; shop: string };
 type VerifyFail = { ok: false; reason: string };
 export type VerifyResult = VerifyOk | VerifyFail;
 
+/**
+ * Shopify App Proxy verification.
+ *
+ * - If `signature` is present: join sorted `k=v` pairs with "" (no '&').
+ * - If `hmac` is present: join sorted `k=v` pairs with "&".
+ *
+ * Supports repeated params via URLSearchParams.getAll() and joins values with "," (Shopify style).
+ */
 export function verifyAppProxyRequest(url: URL): VerifyResult {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
 
-  // App Proxy uses `signature` (hex). Some installs might include `hmac`, but `signature` is the expected param.
-  const provided = url.searchParams.get("signature") || url.searchParams.get("hmac");
   const shop = url.searchParams.get("shop");
-  if (!provided || !shop) return { ok: false, reason: "Missing shop/signature" };
+  const signature = url.searchParams.get("signature");
+  const hmac = url.searchParams.get("hmac");
 
-  // Parse supports repeated params -> arrays
-  const queryHash = parseQuery(url.search.slice(1));
+  if (!shop) return { ok: false, reason: "Missing shop" };
+  if (!signature && !hmac) return { ok: false, reason: "Missing signature/hmac" };
 
-  // Remove signature/hmac before signing
-  delete (queryHash as any).signature;
-  delete (queryHash as any).hmac;
+  const exclude = new Set(["signature", "hmac"]);
 
-  // Build sorted params exactly like Shopify docs:
-  // "#{k}=#{Array(v).join(',')}" then sort then join with NO separator
-  const sortedParams = Object.keys(queryHash)
-    .map((k) => {
-      const v = (queryHash as any)[k];
-      const arr = Array.isArray(v) ? v : [v];
-      return `${k}=${arr.join(",")}`;
-    })
-    .sort()
-    .join("");
+  const keys = Array.from(new Set(Array.from(url.searchParams.keys())))
+    .filter((k) => !exclude.has(k))
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
-  const digest = createHmac("sha256", secret).update(sortedParams).digest("hex");
+  const pairs = keys.map((k) => {
+    const all = url.searchParams.getAll(k).map((v) => String(v));
+    return `${k}=${all.join(",")}`;
+  });
 
-  const a = Buffer.from(digest, "utf8");
-  const b = Buffer.from(provided, "utf8");
-  const ok = a.length === b.length && timingSafeEqual(a, b);
+  const message = signature ? pairs.join("") : pairs.join("&");
+  const digest = createHmac("sha256", secret).update(message).digest("hex");
 
-  return ok ? { ok: true, shop } : { ok: false, reason: "Bad signature" };
+  const provided = (signature || hmac || "").toLowerCase();
+  const computed = digest.toLowerCase();
+
+  if (provided.length !== computed.length) {
+    return { ok: false, reason: signature ? "Bad signature" : "Bad hmac" };
+  }
+
+  const ok = timingSafeEqual(Buffer.from(computed, "utf8"), Buffer.from(provided, "utf8"));
+  return ok ? { ok: true, shop } : { ok: false, reason: signature ? "Bad signature" : "Bad hmac" };
 }
