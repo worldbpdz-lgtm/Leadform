@@ -1,15 +1,7 @@
 // app/routes/apps.leadform.submit.tsx
 import type { ActionFunctionArgs } from "react-router";
-import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
-import { createHmac, timingSafeEqual } from "node:crypto";
-import {
-  makeRequestUploadPath,
-  uploadToSupabase,
-  validateUploadFile,
-} from "~/lib/uploads.server";
-import { syncRequestToPrimarySheet } from "~/lib/sheets.server";
-import { firePixelsForRequest } from "~/lib/pixels.server";
+import { verifyAppProxyRequest } from "~/lib/appProxy.server";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -19,74 +11,6 @@ function json(data: unknown, status = 200) {
       "Cache-Control": "no-store",
     },
   });
-}
-
-type VerifyOk = { ok: true; shop: string };
-type VerifyFail = { ok: false; reason: string };
-type VerifyResult = VerifyOk | VerifyFail;
-
-/**
- * Shopify App Proxy verification.
- *
- * Shopify can send either:
- * - signature (App Proxy): HMAC_SHA256(secret, concat(sorted(key=value)))  // no '&'
- * - hmac (standard):       HMAC_SHA256(secret, join(sorted(key=value), '&'))
- *
- * We accept either, preferring `signature` when present.
- */
-function verifyAppProxyRequest(url: URL): VerifyResult {
-  const secret = process.env.SHOPIFY_API_SECRET;
-  if (!secret) return { ok: false, reason: "Missing SHOPIFY_API_SECRET" };
-
-  const shop = url.searchParams.get("shop");
-  const signature = url.searchParams.get("signature");
-  const hmac = url.searchParams.get("hmac");
-
-  if (!shop) return { ok: false, reason: "Missing shop" };
-  if (!signature && !hmac) return { ok: false, reason: "Missing signature/hmac" };
-
-  function buildPairs(exclude: Set<string>) {
-    const map = new Map<string, string[]>();
-
-    const keys = Array.from(new Set(Array.from(url.searchParams.keys())))
-      .filter((k) => !exclude.has(k))
-      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-
-    for (const k of keys) {
-      const all = url.searchParams.getAll(k);
-      if (!all.length) continue;
-      map.set(k, all.map((v) => String(v)));
-    }
-
-    return keys
-      .filter((k) => map.has(k))
-      .map((k) => `${k}=${map.get(k)!.join(",")}`);
-  }
-
-  function safeEqualHex(calcHex: string, providedHex: string) {
-    const a = calcHex.toLowerCase();
-    const b = String(providedHex).toLowerCase();
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
-  }
-
-  // 1) App Proxy signature
-  if (signature) {
-    const pairs = buildPairs(new Set(["signature", "hmac"]));
-    const message = pairs.join(""); // IMPORTANT: no '&'
-    const digest = createHmac("sha256", secret).update(message).digest("hex");
-    return safeEqualHex(digest, signature)
-      ? { ok: true, shop }
-      : { ok: false, reason: "Bad signature" };
-  }
-
-  // 2) Standard hmac
-  const pairs = buildPairs(new Set(["signature", "hmac"]));
-  const message = pairs.join("&");
-  const digest = createHmac("sha256", secret).update(message).digest("hex");
-  return safeEqualHex(digest, hmac!)
-    ? { ok: true, shop }
-    : { ok: false, reason: "Bad hmac" };
 }
 
 function asRoleType(input: unknown): RoleType | null {
@@ -189,6 +113,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const idempotencyKey =
       stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
+
+    // Lazy imports to avoid import-time crashes producing HTML 500
+    const prismaMod: any = await import("~/db.server");
+    const prisma = prismaMod.default ?? prismaMod.prisma;
+
+    const uploadsMod: any = await import("~/lib/uploads.server");
+    const makeRequestUploadPath = uploadsMod.makeRequestUploadPath;
+    const uploadToSupabase = uploadsMod.uploadToSupabase;
+    const validateUploadFile = uploadsMod.validateUploadFile;
 
     const shop = await prisma.shop.upsert({
       where: { shopDomain: verified.shop },
@@ -428,35 +361,48 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
-    // Fire pixels (best-effort; keep short await to increase reliability on serverless)
-    await Promise.race([
-      firePixelsForRequest({
-        shopId: shop.id,
-        event: "request_submitted",
-        request: {
-          id: created.id,
-          email,
-          phone,
-          ip,
-          userAgent,
-          pageUrl,
-          referrer,
-          productId: primary.productId!,
-          qty: primary.qty,
-          createdAt: created.createdAt,
-          items: (items as any).map((it: any) => ({
-            productId: it.productId!,
-            qty: it.qty,
-          })),
-          currency: "DZD",
-          value: 0,
-        },
-      }),
-      new Promise((resolve) => setTimeout(resolve, 800)),
-    ]).catch(() => {});
+    // Pixels (best-effort)
+    try {
+      const pixelsMod: any = await import("~/lib/pixels.server");
+      const firePixelsForRequest = pixelsMod.firePixelsForRequest;
 
-    // DB -> Sheet (best-effort; never block customer)
-    syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
+      await Promise.race([
+        firePixelsForRequest({
+          shopId: shop.id,
+          event: "request_submitted",
+          request: {
+            id: created.id,
+            email,
+            phone,
+            ip,
+            userAgent,
+            pageUrl,
+            referrer,
+            productId: primary.productId!,
+            qty: primary.qty,
+            createdAt: created.createdAt,
+            items: (items as any).map((it: any) => ({
+              productId: it.productId!,
+              qty: it.qty,
+            })),
+            currency: "DZD",
+            value: 0,
+          },
+        }),
+        new Promise((resolve) => setTimeout(resolve, 800)),
+      ]).catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    // DB -> Sheet (best-effort)
+    try {
+      const sheetsMod: any = await import("~/lib/sheets.server");
+      const syncRequestToPrimarySheet = sheetsMod.syncRequestToPrimarySheet;
+      syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
+    } catch {
+      // ignore
+    }
 
     return json({
       ok: true,
