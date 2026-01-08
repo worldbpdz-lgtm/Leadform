@@ -1,7 +1,8 @@
 // app/routes/apps.leadform.submit.tsx
 import type { ActionFunctionArgs } from "react-router";
+import prisma from "~/db.server";
 import { RoleType } from "@prisma/client";
-import { verifyAppProxyRequest } from "~/lib/appProxy.server";
+import { verifyAppProxyRequest } from "../lib/appProxy.server";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -113,15 +114,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const idempotencyKey =
       stringOrNull(body.idempotencyKey) || request.headers.get("Idempotency-Key") || null;
-
-    // Lazy imports to avoid import-time crashes producing HTML 500
-    const prismaMod: any = await import("~/db.server");
-    const prisma = prismaMod.default ?? prismaMod.prisma;
-
-    const uploadsMod: any = await import("~/lib/uploads.server");
-    const makeRequestUploadPath = uploadsMod.makeRequestUploadPath;
-    const uploadToSupabase = uploadsMod.uploadToSupabase;
-    const validateUploadFile = uploadsMod.validateUploadFile;
 
     const shop = await prisma.shop.upsert({
       where: { shopDomain: verified.shop },
@@ -244,14 +236,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       new Set([...(requirement?.acceptedMimeTypes ?? []), ...defaultAllowed])
     );
 
-    for (const f of files) {
-      try {
-        validateUploadFile(f, {
-          allowedMimeTypes,
-          maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
-        });
-      } catch (e: any) {
-        return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+    // Validate files only if present (avoids any upload-module work when no files)
+    if (files.length) {
+      const { validateUploadFile } = await import("../lib/uploads.server");
+      for (const f of files) {
+        try {
+          validateUploadFile(f, {
+            allowedMimeTypes,
+            maxSizeBytes: requirement?.maxSizeBytes ?? undefined,
+          });
+        } catch (e: any) {
+          return json({ ok: false, error: e?.message || "Invalid file" }, 400);
+        }
       }
     }
 
@@ -319,6 +315,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (files.length) {
       const bucket = process.env.SUPABASE_REVIEW_MEDIA_BUCKET || "leadform-uploads";
+      const { makeRequestUploadPath, uploadToSupabase } = await import("../lib/uploads.server");
 
       try {
         for (const f of files) {
@@ -363,9 +360,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // Pixels (best-effort)
     try {
-      const pixelsMod: any = await import("~/lib/pixels.server");
-      const firePixelsForRequest = pixelsMod.firePixelsForRequest;
-
+      const { firePixelsForRequest } = await import("../lib/pixels.server");
       await Promise.race([
         firePixelsForRequest({
           shopId: shop.id,
@@ -397,8 +392,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // DB -> Sheet (best-effort)
     try {
-      const sheetsMod: any = await import("~/lib/sheets.server");
-      const syncRequestToPrimarySheet = sheetsMod.syncRequestToPrimarySheet;
+      const { syncRequestToPrimarySheet } = await import("../lib/sheets.server");
       syncRequestToPrimarySheet(verified.shop, created.id).catch(() => {});
     } catch {
       // ignore

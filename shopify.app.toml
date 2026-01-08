@@ -3,7 +3,7 @@
 client_id = "b6b67ebbed2fb696bf3215da9c607fab"
 name = "Leadform"
 application_url = "https://leadform-sand.vercel.app"
-embedded = true
+embedded = true   
 
 [build]
 automatically_update_urls_on_dev = false
